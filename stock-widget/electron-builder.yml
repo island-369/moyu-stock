@@ -1,0 +1,16 @@
+appId: com.moyustock.widget
+productName: 行情小窗
+directories:
+  output: dist
+files:
+  - src/**/*
+  - assets/**/*
+  - package.json
+mac:
+  category: public.app-category.finance
+  target:
+    - target: dmg
+      arch: [arm64]
+  darkModeSupport: true
+  extendInfo:
+    LSUIElement: true

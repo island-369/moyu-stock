@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>行情小窗</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app" data-theme="dark" data-fsize="standard" data-form="full">
+
+  <header id="titlebar">
+    <button class="gbtn" id="btn-group" title="切换自选分组" hidden>
+      <span id="btngroup-name">分组</span>
+      <svg class="gcaret" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <span id="title">自选 · —</span>
+    <div class="actions">
+      <button class="ib" id="btn-min" title="退到后台（⌘M）· 行情继续，点 Dock 或菜单栏恢复"></button>
+      <button class="ib" id="btn-add" title="搜索添加自选（⌘F）"></button>
+      <button class="ib" id="btn-news" title="7×24 快讯" hidden></button>
+      <button class="ib" id="btn-eye" title="显示控制：排序 / 浓度 / 形态 / 穿透 / 隐身"></button>
+      <button class="ib" id="btn-set" title="设置"></button>
+      <button class="ib danger" id="btn-quit" title="退出应用（需二次确认）：结束行情刷新，托盘一并关闭"></button>
+    </div>
+  </header>
+
+  <div id="indexbar" hidden></div>
+  <div id="colhead" hidden>
+    <span id="ch-name">名称</span>
+    <span id="ch-price" class="chsort">价格</span>
+    <span id="ch-pct" class="chsort">涨跌</span>
+  </div>
+
+  <main id="list"><div id="listinner"></div></main>
+
+  <div id="empty" class="statebox" hidden>
+    <div class="big">还没有自选</div>
+    <div class="dim">点右上角 ＋ 搜索添加，或到设置里粘贴导入</div>
+    <button class="btn" id="demo-btn">试试示例组合</button>
+  </div>
+
+  <div id="cloudno" class="statebox" hidden>
+    <div class="big">云端自选 · 未登录</div>
+    <div class="dim">扫码登录东方财富，自动同步账号里的全部自选分组</div>
+    <button class="btn" id="login-btn">扫码登录</button>
+    <button class="btn ghost" id="use-manual">先用手动列表</button>
+  </div>
+
+  <div id="banner" hidden>
+    <span id="bannertext"></span>
+    <span class="grow"></span>
+    <button class="mini-btn" id="banner-login" hidden>重新扫码</button>
+    <button class="mini-btn" id="banner-manual" hidden>先用手动列表</button>
+  </div>
+
+  <footer id="statusbar">
+    <span id="dot" class="dot dot-ok"></span>
+    <span id="statustext">启动中…</span>
+    <span class="grow"></span>
+    <span id="statusright"></span>
+  </footer>
+
+  <div id="addpop" hidden>
+    <input id="addinput" placeholder="搜索：茅台 / 600519 / AAPL" spellcheck="false" autocomplete="off">
+    <div id="addresults"></div>
+  </div>
+
+  <div id="vispop" hidden>
+    <div class="vrow">
+      <span class="vlabel">背景浓度</span>
+      <span id="visalpha-val" class="vval">78%</span>
+    </div>
+    <input type="range" id="visalpha" min="35" max="100" step="5" aria-label="背景浓度">
+    <div class="vrow">
+      <span class="vlabel">形态</span>
+      <span class="segbtns">
+        <button class="vbtn on" id="vform-full">完整</button>
+        <button class="vbtn" id="vform-mini">迷你条</button>
+      </span>
+    </div>
+    <div class="vrow vcol">
+      <span class="vlabel">排序</span>
+      <span class="segbtns" id="vsort">
+        <button class="vbtn" data-v="default">默认</button>
+        <button class="vbtn" data-v="pct-desc">涨幅↓</button>
+        <button class="vbtn" data-v="pct-asc">跌幅↓</button>
+        <button class="vbtn" data-v="price-desc">价高↓</button>
+        <button class="vbtn" data-v="price-asc">价低↑</button>
+      </span>
+    </div>
+    <div class="vrow">
+      <span class="vlabel">鼠标穿透</span>
+      <button class="vbtn" id="vpen">开启</button>
+    </div>
+    <div class="vrow">
+      <span class="vlabel">仅看置顶 <span class="dim">(手动模式)</span></span>
+      <button class="vbtn" id="vstar">关闭</button>
+    </div>
+    <div class="vrow">
+      <span class="vlabel">防录屏 <span class="dim">(共享/截屏不可见)</span></span>
+      <button class="vbtn" id="vprot">关闭</button>
+    </div>
+    <div class="vrow">
+      <span class="vlabel">会议模式 <span class="dim">(⌥⇧M 隐身+防录屏+静默)</span></span>
+      <button class="vbtn" id="vmeeting">开启</button>
+    </div>
+    <div class="vrow">
+      <span class="vlabel">隐身 <span class="dim">(老板键)</span></span>
+      <button class="vbtn warn" id="vboss">立即隐身</button>
+    </div>
+    <div class="vhint">穿透开启后窗口不再响应鼠标，按 ⌥⇧X 或点托盘图标恢复</div>
+  </div>
+
+  <div id="grouppop" hidden>
+    <div class="gp-head">自选分组</div>
+    <div id="grouplist"></div>
+  </div>
+
+  <div id="newspanel" hidden>
+    <header>
+      <span>7×24 快讯</span>
+      <span class="grow"></span>
+      <span id="newstime" class="dim"></span>
+      <button class="ib" id="news-close" title="关闭"></button>
+    </header>
+    <div id="newslist"></div>
+  </div>
+
+  <div id="onboard" hidden>
+    <div class="ob-head">
+      <span class="dots"><i class="ob-dot on"></i><i class="ob-dot"></i><i class="ob-dot"></i></span>
+      <button class="linklike" id="ob-skip">跳过</button>
+    </div>
+
+    <div class="step" data-step="1">
+      <h2>欢迎使用行情小窗</h2>
+      <p class="dim">选择自选来源，之后随时可在设置中切换</p>
+      <div class="opt">
+        <div class="optcard" data-mode="manual">
+          <b>手动列表</b>
+          <span class="dim">搜索添加，无需登录</span>
+        </div>
+        <div class="optcard on" data-mode="cloud">
+          <b>云端自选 · 推荐</b>
+          <span class="dim">扫码登录东方财富，自动同步你创建的全部分组</span>
+        </div>
+      </div>
+      <div class="obnav"><span class="grow"></span><button class="btn" id="ob1next">下一步</button></div>
+    </div>
+
+    <div class="step" data-step="2" hidden>
+      <h2>添加自选</h2>
+      <input id="obsearch" placeholder="搜索：茅台 / 600519 / AAPL" spellcheck="false" autocomplete="off">
+      <div id="obresults" class="obresults"></div>
+      <div class="dim obfoot"><span id="obcount">当前 0 只</span><button class="linklike" id="ob-demo">或添加示例组合</button></div>
+      <div class="obnav"><button class="btn ghost" id="ob2back">上一步</button><span class="grow"></span><button class="btn" id="ob2next">下一步</button></div>
+    </div>
+
+    <div class="step" data-step="3" hidden>
+      <h2>调整外观</h2>
+      <label class="frow">主题
+        <select id="obtheme">
+          <option value="auto">跟随系统</option>
+          <option value="dark">深色</option>
+          <option value="light">浅色</option>
+        </select>
+      </label>
+      <label class="frow">字号
+        <select id="obfsize">
+          <option value="mini">迷你</option>
+          <option value="compact">紧凑</option>
+          <option value="standard" selected>标准</option>
+          <option value="large">大</option>
+        </select>
+      </label>
+      <label class="frow">背景浓度
+        <input type="range" id="obalpha" min="35" max="100" value="78">
+      </label>
+      <h4>隐蔽性（摸鱼核心，推荐开启）</h4>
+      <label class="frow">单色模式（去红绿，方向看正负号）
+        <input type="checkbox" id="obmono" checked>
+      </label>
+      <label class="frow">隐藏股票代码
+        <input type="checkbox" id="obcode" checked>
+      </label>
+      <p class="dim small">记住两个快捷键：<b>⌥⇧H</b> 老板键一键隐身（再按唤回）；<b>⌥⇧M</b> 会议模式（开会共享屏幕前按，散会再按恢复）。全部快捷键可在设置里改。</p>
+      <div class="obnav"><button class="btn ghost" id="ob3back">上一步</button><span class="grow"></span><button class="btn" id="obdone">完成</button></div>
+    </div>
+  </div>
+
+  <div id="toast" hidden></div>
+  <div id="rz-e" class="rz"></div>
+  <div id="rz-s" class="rz"></div>
+  <div id="rz-se" class="rz"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

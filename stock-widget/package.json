@@ -1,0 +1,18 @@
+{
+  "name": "moyu-stock",
+  "productName": "行情小窗",
+  "version": "0.1.0",
+  "description": "macOS 桌面透明自选行情悬浮小窗 · 东方财富自选同步",
+  "main": "src/main/index.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node tests/run.js",
+    "icon": "node tools/gen-icon.js",
+    "smoke": "electron . --smoke",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^44.7.0"
+  }
+}

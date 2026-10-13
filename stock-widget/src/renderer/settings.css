@@ -1,0 +1,140 @@
+/* 设置窗样式：系统原生控件 + hairline，与主窗同一套色板 */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+
+:root {
+  --tx: #1C1C1A; --tx2: #6B6B66; --tx3: #A09E97;
+  --hair: rgba(28,28,26,.12);
+  --hover: rgba(28,28,26,.05);
+  --bg: #F6F6F4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tx: #E9EBEE; --tx2: #9BA1A8; --tx3: #676D75;
+    --hair: rgba(255,255,255,.1);
+    --hover: rgba(255,255,255,.06);
+    --bg: #1D1F24;
+  }
+}
+
+body {
+  background: var(--bg);
+  color: var(--tx);
+  font: 13px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  padding: 14px 18px 24px;
+  overflow-y: auto;
+}
+
+section { margin-bottom: 22px; }
+h3 {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--tx2);
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--hair);
+}
+h4 { font-size: 12.5px; font-weight: 590; margin: 12px 0 6px; }
+
+.frow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  color: var(--tx);
+}
+.frow select, .frow input[type="text"] {
+  border: 1px solid var(--hair);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--tx);
+  padding: 3px 8px;
+  font-family: inherit;
+  outline: none;
+  min-width: 170px;
+}
+.frow select:focus { border-color: var(--tx2); }
+.frow input[type="range"] { width: 180px; accent-color: var(--tx2); }
+.frow input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--tx2); }
+
+.seg { display: flex; gap: 0; border: 1px solid var(--hair); border-radius: 6px; overflow: hidden; width: fit-content; margin: 4px 0 10px; }
+.seg button {
+  border: 0;
+  background: transparent;
+  color: var(--tx2);
+  padding: 5px 16px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+}
+.seg button.on { background: var(--hover); color: var(--tx); font-weight: 590; }
+
+.btn {
+  border: 1px solid var(--hair);
+  background: transparent;
+  color: var(--tx);
+  padding: 4px 14px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+}
+.btn:hover { background: var(--hover); }
+.btn.ghost { color: var(--tx2); }
+.btnrow { display: flex; gap: 8px; align-items: center; }
+
+textarea {
+  width: 100%;
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tx);
+  padding: 7px 9px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  outline: none;
+  resize: vertical;
+  margin-top: 8px;
+}
+textarea:focus { border-color: var(--tx2); }
+
+.mlist { display: flex; flex-wrap: wrap; gap: 5px; max-height: 150px; overflow-y: auto; }
+.mitem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--hair);
+  border-radius: 5px;
+  padding: 2px 6px 2px 9px;
+  font-size: 12px;
+}
+.mitem .del {
+  border: 0; background: none; color: var(--tx3); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 2px;
+}
+.mitem .del:hover { color: #E5484D; }
+
+.scrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+.scrow .name { flex: 1; color: var(--tx2); }
+.scrow .acc {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  border: 1px solid var(--hair);
+  border-radius: 4px;
+  padding: 2px 10px;
+  min-width: 110px;
+  text-align: center;
+}
+.scrow.recording .acc { border-color: #E5C24F; color: #E5C24F; }
+
+.dim { color: var(--tx2); }
+.small { font-size: 12px; line-height: 1.7; }
+#importmsg { margin-top: 6px; min-height: 18px; }

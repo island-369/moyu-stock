@@ -1,0 +1,12 @@
+# 工作区工具缓存
+.zwork/
+
+# macOS
+.DS_Store
+
+# 日志
+*.log
+
+# 依赖与构建产物（子目录各自也有 .gitignore，此处兜底）
+node_modules/
+dist/

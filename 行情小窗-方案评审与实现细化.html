@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>行情小窗 · 方案评审与实现细化 v2.1</title>
+<style>
+:root{
+  --bg:#fafaf9;
+  --ink:#1c1c1a;
+  --ink-2:#6b6b66;
+  --ink-3:#a3a29c;
+  --accent:#b0232c;
+  --accent-ink:#8f1c24;
+  --rule:rgba(28,28,26,.16);
+  --rule-soft:rgba(28,28,26,.08);
+  --up:#c62f3f;
+  --down:#21866b;
+  --paper-widget:#26282e;
+  --sans:"PingFang SC","Helvetica Neue","Source Han Sans SC","Noto Sans CJK SC",sans-serif;
+  --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  --measure:720px;
+  --gutter:clamp(18px,3.5vw,44px);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg);color:var(--ink);
+  font-family:var(--sans);font-size:15px;line-height:1.75;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+::selection{background:rgba(176,35,44,.14)}
+
+/* ---------- 封面区 ---------- */
+.doc-head{
+  max-width:1280px;margin:0 auto;padding:72px var(--gutter) 40px;
+}
+.doc-head .kicker{
+  font-family:var(--mono);font-size:11px;letter-spacing:.14em;
+  color:var(--accent);text-transform:uppercase;margin-bottom:18px;
+}
+.doc-head h1{
+  font-size:clamp(34px,4.6vw,46px);font-weight:650;letter-spacing:-.02em;
+  line-height:1.12;margin-bottom:14px;
+}
+.doc-head .sub{
+  font-size:16.5px;color:var(--ink-2);line-height:1.6;max-width:640px;
+}
+.doc-head .meta-row{
+  display:flex;flex-wrap:wrap;gap:10px 36px;margin-top:34px;
+  padding-top:16px;border-top:2px solid var(--ink);
+  font-family:var(--mono);font-size:11.5px;letter-spacing:.03em;color:var(--ink-2);
+}
+.doc-head .meta-row b{color:var(--ink);font-weight:500}
+
+/* ---------- 布局 ---------- */
+.layout{
+  display:grid;grid-template-columns:216px minmax(0,1fr);
+  max-width:1280px;margin:0 auto;padding:0 var(--gutter) 40px;gap:44px;
+}
+.sidebar{
+  position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;
+  padding:44px 0 24px;border-right:1px solid var(--rule-soft);
+  font-family:var(--mono);font-size:11.5px;
+}
+.sidebar .toc-title{
+  letter-spacing:.12em;color:var(--ink-3);text-transform:uppercase;
+  margin-bottom:14px;font-size:10.5px;
+}
+.sidebar a{
+  display:block;color:var(--ink-2);text-decoration:none;
+  padding:5px 12px 5px 0;line-height:1.45;
+}
+.sidebar a .no{color:var(--ink-3);margin-right:8px}
+.sidebar a:hover{color:var(--ink)}
+.sidebar a.active{color:var(--accent)}
+.sidebar a.active .no{color:var(--accent)}
+.sidebar .toc-sub{margin:2px 0 2px 22px;font-size:10.5px;color:var(--ink-3)}
+.sidebar .toc-sub a{padding:3px 0}
+@media (max-width:960px){
+  .layout{grid-template-columns:1fr;gap:0}
+  .sidebar{display:none}
+}
+
+/* ---------- 章节骨架 ---------- */
+section{padding:38px 0 8px}
+.sec-head{margin-bottom:22px}
+.sec-head .sec-kicker{
+  font-family:var(--mono);font-size:11px;letter-spacing:.14em;
+  color:var(--accent);text-transform:uppercase;margin-bottom:8px;
+}
+.sec-head h2{
+  font-size:24px;font-weight:620;letter-spacing:-.01em;line-height:1.28;
+  padding-bottom:12px;border-bottom:1px solid var(--rule);
+}
+.sec-head .lede{margin-top:14px;color:var(--ink-2);font-size:14.5px;max-width:var(--measure)}
+h3{
+  font-size:16.5px;font-weight:600;letter-spacing:.01em;
+  margin:34px 0 12px;
+}
+h3 .h3-no{font-family:var(--mono);font-size:12px;color:var(--ink-3);font-weight:400;margin-right:10px;letter-spacing:.04em}
+p{max-width:var(--measure);margin-bottom:14px}
+p.wide{max-width:none}
+strong{font-weight:600}
+em{font-style:normal;color:var(--ink-2)}
+a{color:var(--accent-ink);text-decoration:none;border-bottom:1px solid rgba(176,35,44,.3)}
+a:hover{border-bottom-color:var(--accent)}
+
+.prose-block{max-width:var(--measure)}
+.bleed{max-width:none;margin-left:calc(-1 * clamp(18px,4vw,120px));margin-right:calc(-1 * clamp(18px,4vw,120px))}
+
+/* ---------- 表格 ---------- */
+table{
+  border-collapse:collapse;width:100%;margin:18px 0 8px;
+  font-size:13px;line-height:1.6;
+}
+th{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-2);font-weight:500;text-align:left;
+  padding:8px 14px 8px 0;border-bottom:1px solid var(--ink);white-space:nowrap;
+}
+td{
+  padding:9px 14px 9px 0;border-bottom:1px solid var(--rule-soft);
+  vertical-align:top;
+}
+tr:last-child td{border-bottom:1px solid var(--rule)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:22px}
+td .mono, .mono{font-family:var(--mono);font-size:12px}
+.table-note{
+  font-size:12px;color:var(--ink-2);margin:4px 0 26px;max-width:none;
+  font-family:var(--mono);letter-spacing:.01em;
+}
+.tbl-caption{
+  font-family:var(--mono);font-size:11px;color:var(--ink-3);
+  letter-spacing:.08em;margin:22px 0 0;text-transform:uppercase;
+}
+
+/* ---------- 标签 ---------- */
+.tag{
+  font-family:var(--mono);font-size:10px;letter-spacing:.06em;
+  color:var(--ink-2);border:1px solid var(--rule);
+  padding:1px 7px;border-radius:3px;white-space:nowrap;
+}
+.tag.p0{color:var(--accent);border-color:rgba(176,35,44,.45)}
+.up{color:var(--up)}
+.down{color:var(--down)}
+.flat{color:var(--ink-2)}
+
+/* ---------- 引用块 ---------- */
+blockquote{
+  max-width:var(--measure);margin:16px 0;padding:12px 0 12px 18px;
+  border-left:2px solid var(--rule);color:var(--ink-2);font-size:13.5px;
+}
+blockquote .src{
+  display:block;margin-top:8px;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.08em;color:var(--ink-3);text-transform:uppercase;
+}
+
+/* ---------- 代码块 ---------- */
+pre{
+  font-family:var(--mono);font-size:12px;line-height:1.62;
+  background:#f3f2f0;border:1px solid var(--rule-soft);border-radius:4px;
+  padding:16px 18px;overflow-x:auto;margin:16px 0 24px;color:#33332f;
+}
+pre code{font-family:inherit}
+code.inline{
+  font-family:var(--mono);font-size:12.5px;background:#f1f0ee;
+  border:1px solid var(--rule-soft);border-radius:3px;padding:1px 5px;
+}
+
+/* ---------- 交互 widget：透明度对比 ---------- */
+.widget{
+  border:1px solid var(--rule);border-radius:4px;
+  margin:26px 0 10px;padding:22px 22px 16px;max-width:none;
+}
+.widget-title{
+  font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-2);margin-bottom:18px;
+}
+.widget-grid{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+@media (max-width:760px){.widget-grid{grid-template-columns:1fr}}
+.demo-label{
+  font-family:var(--mono);font-size:11px;color:var(--ink);margin-bottom:8px;
+  letter-spacing:.02em;
+}
+.demo-label .verdict{color:var(--ink-3)}
+.demo-label .bad{color:var(--accent)}
+.demo-stage{
+  background:#3a3d44;border:1px solid var(--rule-soft);border-radius:4px;
+  height:150px;display:flex;align-items:center;justify-content:center;
+  position:relative;overflow:hidden;
+}
+.demo-stage .desk-hint{
+  position:absolute;left:10px;top:8px;font-family:var(--mono);
+  font-size:9.5px;color:rgba(255,255,255,.28);letter-spacing:.08em;
+}
+.miniwin{
+  width:196px;border:1px solid rgba(255,255,255,.16);border-radius:8px;
+  padding:10px 12px 8px;color:#e9ebee;font-size:11.5px;line-height:1.65;
+  position:relative;background:rgba(24,26,31,1);
+}
+.miniwin .mw-head{
+  display:flex;justify-content:space-between;margin-bottom:5px;
+  color:#9ba1a8;font-size:10px;font-family:var(--mono);
+}
+.miniwin .row{display:flex;justify-content:space-between;font-variant-numeric:tabular-nums}
+.miniwin .row .nm{color:#c6cad0}
+.miniwin .px{font-family:var(--mono)}
+.ctrl{display:flex;align-items:center;gap:10px;margin-top:10px}
+.ctrl input[type=range]{flex:1;accent-color:var(--accent);height:14px}
+.ctrl .val{font-family:var(--mono);font-size:11px;color:var(--ink-2);width:64px;text-align:right;font-variant-numeric:tabular-nums}
+.widget-note{font-size:12px;color:var(--ink-3);margin-top:14px;font-family:var(--mono)}
+
+/* ---------- 线框图 SVG ---------- */
+figure.wireframe{margin:26px 0 8px}
+figure.wireframe figcaption{
+  font-family:var(--mono);font-size:11px;color:var(--ink-2);
+  letter-spacing:.08em;margin-top:10px;text-transform:uppercase;
+}
+.wire-wrap{
+  border:1px solid var(--rule-soft);border-radius:4px;padding:28px 20px;
+  display:flex;justify-content:center;background:#fdfdfc;
+}
+
+/* ---------- 架构图 ---------- */
+.arch{margin:20px 0 8px}
+.arch .blk{
+  border:1px solid var(--rule);border-radius:4px;padding:14px 18px;margin-bottom:0;
+}
+.arch .blk + .blk{margin-top:10px}
+.arch .blk-title{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-2);margin-bottom:8px;
+}
+.arch .blk-body{font-size:13px;line-height:1.8;color:var(--ink)}
+.arch .blk-body .mono{color:var(--ink-2)}
+.arch .connector{
+  text-align:center;font-family:var(--mono);font-size:10px;color:var(--ink-3);
+  letter-spacing:.1em;margin:6px 0;
+}
+
+/* ---------- 决策对照表里的强弱标记 ---------- */
+del.v1{color:var(--ink-3);text-decoration-color:rgba(176,35,44,.5)}
+ins.v2{text-decoration:none;font-weight:520}
+
+/* ---------- Colophon ---------- */
+.colophon{
+  margin-top:56px;padding-top:22px;border-top:1px solid var(--rule);
+  font-family:var(--mono);font-size:11px;line-height:2;color:var(--ink-3);
+  letter-spacing:.02em;
+}
+.colophon b{color:var(--ink-2);font-weight:500}
+
+/* ---------- 评审结论卡 ---------- */
+.verdict-table td:first-child{white-space:nowrap;font-weight:600}
+</style>
+</head>
+<body>
+
+<!-- ================= 封面 ================= -->
+<header class="doc-head">
+  <div class="kicker">Design Review · v1 → v2</div>
+  <h1>行情小窗<br>方案评审与实现细化</h1>
+  <p class="sub">对「macOS 桌面透明行情悬浮窗」v1 设计方案的四面评审——界面美观、使用方便、体验舒适、功能可靠——以及修订后的详细实现方案。评审对象为设计方案文本；全程无应用代码产出，仅含对东方财富公开前端资源的只读核验。</p>
+  <div class="meta-row">
+    <span>日期 <b>2026-10-12</b></span>
+    <span>版本 <b>v2.1（自选链路核验版）</b></span>
+    <span>评审对象 <b>v1 方案（对话纪要）</b></span>
+    <span>平台 <b>macOS 26 · arm64 · Electron</b></span>
+    <span>状态 <b>v0.1.0 已实现 · 冒烟通过</b></span>
+  </div>
+</header>
+
+<div class="layout">
+
+<!-- ================= TOC ================= -->
+<nav class="sidebar" id="toc">
+  <div class="toc-title">目录</div>
+  <a href="#s0"><span class="no">00</span>总评</a>
+  <a href="#s1"><span class="no">01</span>必须修正：透明度实现</a>
+  <div class="toc-sub"><a href="#s1-demo">对比演示</a></div>
+  <a href="#s2"><span class="no">02</span>功能可靠</a>
+  <div class="toc-sub"><a href="#s2-1">数据链路</a></div>
+  <div class="toc-sub"><a href="#s2-2">同步链路</a></div>
+  <div class="toc-sub"><a href="#s2-3">进程与数据</a></div>
+  <a href="#s3"><span class="no">03</span>界面美观</a>
+  <div class="toc-sub"><a href="#s3-1">视觉规范</a></div>
+  <div class="toc-sub"><a href="#s3-2">界面结构</a></div>
+  <a href="#s4"><span class="no">04</span>使用方便</a>
+  <div class="toc-sub"><a href="#s4-1">托盘兜底</a></div>
+  <div class="toc-sub"><a href="#s4-2">搜索添加</a></div>
+  <a href="#s5"><span class="no">05</span>体验舒适</a>
+  <div class="toc-sub"><a href="#s5-1">状态全景</a></div>
+  <div class="toc-sub"><a href="#s5-2">代码覆盖面</a></div>
+  <a href="#s6"><span class="no">06</span>修订后实现方案</a>
+  <div class="toc-sub"><a href="#s6-1">架构</a></div>
+  <div class="toc-sub"><a href="#s6-3">决策对照</a></div>
+  <div class="toc-sub"><a href="#s6-6">里程碑</a></div>
+  <a href="#s7"><span class="no">07</span>待拍板事项</a>
+</nav>
+
+<!-- ================= 正文 ================= -->
+<main>
+
+<!-- ============ 00 总评 ============ -->
+<section id="s0">
+  <div class="sec-head">
+    <div class="sec-kicker">00 / Overall</div>
+    <h2>总评</h2>
+    <p class="lede">v1 方案的技术选型与前期功课是扎实的：Electron 选型正确、接口逆向深入、凭据安全设计专业。但按「美观、易用、舒适、可靠」四个标准逐面审，存在 1 处必须修正的技术缺陷与 19 处可优化点——集中在三件事上：异常态没有设计、视觉规范没有落地、兜底入口不全。</p>
+  </div>
+
+  <div class="prose-block">
+  <p><strong>先说结论：</strong>方向对、骨架好，值得做。v1 已经回答了「能不能实现」（能，接口已实测）；v2 要回答的是「做完之后好不好用、出事了怎么办」。这个差别正是本次评审的全部重点。</p>
+  </div>
+
+  <div class="tbl-caption">表 0-1 · 四维度评审结论</div>
+  <table class="verdict-table">
+    <thead><tr><th style="width:12%">维度</th><th style="width:30%">v1 现状</th><th style="width:14%">评审结论</th><th>主要缺口</th></tr></thead>
+    <tbody>
+      <tr><td>功能可靠</td><td>主链路（行情、快讯）已实测可用；异常链路未设计</td><td>需补强</td><td>无备源、无交易时段感知、失败不分类、配置无原子写、无崩溃恢复、无性能预算</td></tr>
+      <tr><td>界面美观</td><td>有信息架构草图，无视觉规范</td><td>需落地</td><td>透明度实现方式有误（§1）、无 design token、无等宽数字、无主题系统、无动效规范</td></tr>
+      <tr><td>使用方便</td><td>主流程通，兜底入口不全</td><td>需补全</td><td>穿透后入口单一、手动导入只能粘贴、无拖拽排序、快捷键不可自定义</td></tr>
+      <tr><td>体验舒适</td><td>核心看盘场景覆盖，首启与异常态空白</td><td>需设计</td><td>无 onboarding、形态切换生硬、无状态反馈全景、停牌/收盘等场景未定义</td></tr>
+    </tbody>
+  </table>
+  <p class="table-note">全部 20 项修订的完整清单见 §6.3 决策对照表。</p>
+</section>
+
+<!-- ============ 01 透明度 ============ -->
+<section id="s1">
+  <div class="sec-head">
+    <div class="sec-kicker">01 / P0 · Must Fix</div>
+    <h2>必须修正：透明度的实现方式</h2>
+    <p class="lede">v1 用 <code class="inline">win.setOpacity()</code> 做「透明度滑杆 15%–100%」。这是整份方案里唯一必须推翻重来的决策：它让<strong>整个窗口（包括文字）</strong>一起变淡，15% 时数字完全不可读。「背景隐蔽」和「看清数字」在这条路上是互斥的——而这恰恰是产品的两个核心诉求。</p>
+  </div>
+
+  <div class="prose-block">
+  <blockquote>
+    窗口透明度可调 → win.setOpacity()，一个滑杆 15%~100%
+    <span class="src">v1 方案 · 原文</span>
+  </blockquote>
+  <p><code class="inline">setOpacity()</code> 作用于 OS 层的整个窗口合成——背景板、文字、按钮一视同仁。拖到 40% 以下，价格数字就开始糊；拖到 15%（v1 的下限），小窗基本等于消失。用户真正想要的是：<strong>背景板尽可能透明，数字始终清晰</strong>。这是两个独立的自由度，必须分开实现。</p>
+  </div>
+
+  <h3 id="s1-demo">修订方案：背景与文字分离</h3>
+  <div class="prose-block">
+  <p>窗口本体用 <code class="inline">transparent: true</code> + <code class="inline">backgroundColor: '#00000000'</code> 创建，透明度滑杆<strong>只调内容区背景板的 alpha 通道</strong>（CSS <code class="inline">rgba()</code>），文字的不透明度恒为 1。两个滑杆拖到同样的低值，观感天差之别：</p>
+  </div>
+
+  <div class="widget" id="demo">
+    <div class="widget-title">交互演示 · 拖动下方滑杆，对比两种实现</div>
+    <div class="widget-grid">
+      <div>
+        <div class="demo-label"><span class="bad">v1 · setOpacity() 整窗变淡</span> <span class="verdict">— 文字跟着消失</span></div>
+        <div class="demo-stage">
+          <span class="desk-hint">DESKTOP</span>
+          <div class="miniwin" id="winA">
+            <div class="mw-head"><span>自选 · 3</span><span>14:32</span></div>
+            <div class="row"><span class="nm">贵州茅台</span><span class="px">1283.19 <span class="up">+1.25%</span></span></div>
+            <div class="row"><span class="nm">平安银行</span><span class="px">11.77 <span class="up">+1.55%</span></span></div>
+            <div class="row"><span class="nm">宁德时代</span><span class="px">263.80 <span class="down">-0.48%</span></span></div>
+          </div>
+        </div>
+        <div class="ctrl">
+          <input type="range" id="sliderA" min="0.15" max="1" step="0.01" value="1" aria-label="窗口整体不透明度">
+          <span class="val" id="valA">100%</span>
+        </div>
+      </div>
+      <div>
+        <div class="demo-label"><span>v2 · 背景 α 独立可调</span> <span class="verdict">— 文字恒清晰</span></div>
+        <div class="demo-stage">
+          <span class="desk-hint">DESKTOP</span>
+          <div class="miniwin" id="winB">
+            <div class="mw-head"><span>自选 · 3</span><span>14:32</span></div>
+            <div class="row"><span class="nm">贵州茅台</span><span class="px">1283.19 <span class="up">+1.25%</span></span></div>
+            <div class="row"><span class="nm">平安银行</span><span class="px">11.77 <span class="up">+1.55%</span></span></div>
+            <div class="row"><span class="nm">宁德时代</span><span class="px">263.80 <span class="down">-0.48%</span></span></div>
+          </div>
+        </div>
+        <div class="ctrl">
+          <input type="range" id="sliderB" min="0" max="1" step="0.01" value="1" aria-label="背景板不透明度">
+          <span class="val" id="valB">100%</span>
+        </div>
+      </div>
+    </div>
+    <div class="widget-note">左侧模拟 setOpacity()：文字与背景一同变淡，&lt;40% 即难以阅读。右侧模拟修订方案：仅背景板 alpha 变化，0% 时只剩文字悬浮于桌面，依然可读。</div>
+  </div>
+
+  <div class="prose-block">
+  <p><strong>再进一档：原生毛玻璃。</strong>在背景板 alpha 之外叠加 Electron 的 <code class="inline">vibrancy: 'under-window'</code>（macOS 原生 NSVisualEffectView），获得系统级毛玻璃质感——与 macOS 自带的小组件、控制中心观感一致，比纯色半透明更融入桌面。设置中提供「毛玻璃 / 纯色半透明」二选一（部分壁纸下纯色可读性更好）。配套调整：原方案的 ⌥⇧↑/↓ 快捷键语义改为「背景浓度 ±5%」，而非整窗透明度。</p>
+  <p><em>这一处修正同时改善了美观（质感）、易用（低透明度下仍可读）与体验（隐蔽与看清不再两难），是全文优先级最高的一项。</em></p>
+  </div>
+</section>
+
+<!-- ============ 02 功能可靠 ============ -->
+<section id="s2">
+  <div class="sec-head">
+    <div class="sec-kicker">02 / Reliability</div>
+    <h2>功能可靠：把「能通」升级为「出事也不倒」</h2>
+    <p class="lede">v1 的可靠性设计止步于「Cookie 过期挂黄点」。但一个 7×24 常驻的工具，真正的考验全在异常态：接口挂了、网断了、进程崩了、配置写坏了。可靠性的本体不是主流程，是异常分支。</p>
+  </div>
+
+  <h3 id="s2-1"><span class="h3-no">2.1</span>数据链路：单源、盲刷、精度</h3>
+  <div class="prose-block">
+  <p><strong>问题一：单点数据源。</strong>v1 全部押在东财非官方接口上。行情接口虽多年稳定，但「多年稳定」≠「永远稳定」。修订：<strong>新浪行情备源</strong>（<code class="inline">qt.gtimg.cn/q=sh600519,sz000001</code>，字段以 <code class="inline">~</code> 分隔，同样无需登录、同样久经考验）自动降级——主源连续 3 次失败切换备源，主源每 60 秒探活、恢复自动切回，状态条标注当前数据源。用户对切换无感知，最多看到一行小字。</p>
+  <p><strong>问题二：无交易时段感知。</strong>固定 3 秒刷新意味着收盘后、周末、节假日仍在以 3 秒频率请求——既浪费又徒增风控暴露面，状态条还永远显示「最新」。修订：刷新频率由<strong>交易时段状态机</strong>驱动：</p>
+  </div>
+
+  <div class="tbl-caption">表 2-1 · 交易时段感知的刷新策略</div>
+  <table>
+    <thead><tr><th style="width:18%">时段</th><th style="width:20%">时间（A 股）</th><th style="width:22%" class="num">刷新间隔</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>集合竞价</td><td class="mono">09:15–09:25</td><td class="num">5 s</td><td>竞价价格跳动，稍慢即可</td></tr>
+      <tr><td>早盘连续竞价</td><td class="mono">09:30–11:30</td><td class="num">3 / 5 / 10 s（默认 5 s）</td><td>主看盘时段，用户可调</td></tr>
+      <tr><td>午间休市</td><td class="mono">11:30–13:00</td><td class="num">30 s</td><td>静默等待，避免空转</td></tr>
+      <tr><td>午盘连续竞价</td><td class="mono">13:00–15:00</td><td class="num">同早盘</td><td>—</td></tr>
+      <tr><td>盘后</td><td class="mono">15:00 起</td><td class="num">收盘价 1 次 → 5 min 心跳</td><td>心跳仅用于校验交易日切换</td></tr>
+      <tr><td>非交易日</td><td>周末 / 节假日</td><td class="num">60 s 心跳</td><td>内置年度节假日表，心跳校验兜底</td></tr>
+    </tbody>
+  </table>
+  <p class="table-note">港股 / 美股自选按各自交易时段独立计算；多市场混合自选取所有活跃时段的并集。</p>
+
+  <div class="prose-block">
+  <p><strong>问题三：精度与容错细节。</strong>东财行情接口在不带 <code class="inline">fltt=2</code> 时返回的 f2（现价）是放大后的整数，需要按市场规则手工除算——这是社区项目里最常踩的坑。修订：请求统一带 <code class="inline">fltt=2</code> 直接取浮点；<strong>停牌股票 f2 返回字符串 "-"</strong>，解析层显式容错（进入「停牌」态，见 §5.3）；自选超过 50 只时自动分批请求，避免单请求过载。</p>
+  <p><strong>问题四：请求身份。</strong>裸请求的默认 UA 与浏览器差异明显，是被风控识别的常见诱因。修订：所有请求的 UA / Referer 对齐东财网页版自身，行为与一个开着网页的浏览器无异。</p>
+  </div>
+
+  <h3 id="s2-2"><span class="h3-no">2.2</span>同步链路：失败要分类，不能一律黄点</h3>
+  <div class="prose-block">
+  <p>v1 对云端自选同步的失败处理只有一种：「挂黄点」。但失败至少有三类，处理方式完全不同——<strong>未登录</strong>（Cookie 过期，需要重扫）、<strong>网络错误</strong>（等网络恢复，退避重试）、<strong>接口变更</strong>（东财改了协议，重试无意义，需要通知用户切手动模式）。一律黄点会让用户在断网时误以为登录过期，白白扫码。</p>
+  <p>修订：<strong>三分类失败处理</strong>＋<strong>指数退避</strong>（1 s / 2 s / 4 s，连续 5 次后转 60 s 慢速）＋<strong>快照兜底</strong>（最后一份自选列表与行情本地留存，离线 / 失败期间照常显示，仅标注数据时间）。另外补一块 v1 完全没提的：<strong>云端分组</strong>——东财自选支持多分组，若用户手机上分了「长线 / 短线」，单列表混排会乱。修订：云端分组映射为小窗顶部的分组 tab，默认「全部」合并视图。该数据服务的接口契约已于 2026-10-12 静态逆向确认并在游客态实测存活（详见 §6.4）——无加密参数，v1 担心的 dtoken 风险排除。</p>
+  </div>
+
+  <h3 id="s2-3"><span class="h3-no">2.3</span>进程与数据：崩溃、断电、日志</h3>
+  <div class="prose-block">
+  <p>四个 v1 未提、但常驻工具必备的底盘：</p>
+  <p><strong>崩溃恢复</strong>——渲染进程 crash 事件监听，自动重建窗口（用户最多看到一次闪烁）；<code class="inline">requestSingleInstanceLock</code> 单实例锁，防止误开两个。<strong>配置原子写</strong>——设置与自选列表先写临时文件再 rename，保留双份滚动备份，损坏自动回滚上一版；断电、强退不会丢配置。<strong>日志</strong>——electron-log 滚动保留 7 天，Cookie 与手机号强制脱敏；出问题有据可查，而不是靠复现。<strong>性能预算</strong>——摸鱼场景的特殊约束：风扇狂转、电脑发烫本身就是暴露。预算：休市空闲 CPU 趋近 0%、无网络活动；盘中 20 只自选 5 s 刷新 CPU &lt; 2%、常驻内存 &lt; 300 MB；所有动效只走 <code class="inline">transform</code> / <code class="inline">opacity</code>，不触发布局重排。</p>
+  </div>
+</section>
+
+<!-- ============ 03 界面美观 ============ -->
+<section id="s3">
+  <div class="sec-head">
+    <div class="sec-kicker">03 / Visual</div>
+    <h2>界面美观：从信息草图到视觉规范</h2>
+    <p class="lede">v1 的界面草图只解决了「放什么」，没解决「长什么样」。美观不靠灵感，靠把规范定死：字体、数字、颜色、动效每一项都有明确答案，写代码时照表执行即可。</p>
+  </div>
+
+  <h3 id="s3-1"><span class="h3-no">3.1</span>视觉规范（design token）</h3>
+
+  <div class="tbl-caption">表 3-1 · 小窗 design token（深色主题为默认）</div>
+  <table>
+    <thead><tr><th style="width:14%">类别</th><th style="width:44%">取值</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>字体</td><td class="mono">-apple-system（SF Pro + 苹方）；价格列 <code class="inline">font-variant-numeric: tabular-nums</code></td><td>数字等宽——价格跳动时列宽稳定，不抖动</td></tr>
+      <tr><td>字号档</td><td class="num">迷你 11 · 紧凑 12.5 · 标准 14 · 大 16 px</td><td>四档全局切换，Retina 原生清晰</td></tr>
+      <tr><td>涨 / 跌</td><td class="mono">#E5484D / #30A46C，红涨绿跌与绿涨红跌可互换</td><td>附 ▲▼ 符号冗余，色弱用户不受影响</td></tr>
+      <tr><td>背景板</td><td class="mono">深 rgba(24,26,31,α) · 浅 rgba(250,250,252,α)，α ∈ [0.35, 1]</td><td>α 即「透明度滑杆」；文字不透明度恒为 1（§1）</td></tr>
+      <tr><td>文字</td><td class="mono">主 #E9EBEE · 次 #9BA1A8（深色主题）</td><td>正文对比度 ≥ 4.5 : 1</td></tr>
+      <tr><td>形状</td><td class="num">窗角 10 px · 行分隔 1 px hairline</td><td>克制；不做多层圆角卡片</td></tr>
+      <tr><td>动效</td><td>价格变动单次 300 ms 背景脉冲；hover 80 ms；形态切换 220 ms</td><td>全部可在设置中关闭（闪烁对部分用户是干扰）</td></tr>
+    </tbody>
+  </table>
+
+  <div class="prose-block">
+  <p>三个最影响观感的点展开说。<strong>等宽数字</strong>：行情界面的数字每 3 秒变一次，非等宽字体的「1」比「8」窄，价格跳动时整列左右抽动——开关 <code class="inline">tabular-nums</code> 一行代码，观感差异巨大。<strong>主题</strong>：跟随系统深浅色自动切换，可手动锁定；默认深色（该产品的典型使用场景是暗色调的办公室桌面）。<strong>动效</strong>：价格变动做<strong>单次脉冲</strong>（背景色淡入淡出一次）而非持续闪烁——持续闪烁在余光里非常恼人，这是很多行情软件被诟病的细节；0.00% 不触发。</p>
+  </div>
+
+  <h3 id="s3-2"><span class="h3-no">3.2</span>修订后的界面结构</h3>
+  <div class="prose-block">
+  <p>在 v1 草图基础上细化：明确的四段式（拖拽头 / 指数条 / 列表 / 状态条）、右对齐的价格与涨跌幅列、行内分时展开。状态条是新增的关键段——同步状态、数据源、更新时间都在这里，异常提示（黄条）也出现在这里，用户永远知道「我现在看的数据是什么状态」。</p>
+  </div>
+
+  <figure class="wireframe">
+    <div class="wire-wrap">
+    <svg width="620" height="470" viewBox="0 0 620 470" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, Menlo, monospace">
+      <!-- 小窗主体 -->
+      <rect x="60" y="30" width="280" height="330" rx="10" fill="rgba(24,26,31,0.05)" stroke="#1c1c1a" stroke-width="1.2"/>
+      <!-- header -->
+      <line x1="60" y1="64" x2="340" y2="64" stroke="rgba(28,28,26,.25)" stroke-width="1"/>
+      <text x="76" y="53" font-size="11" fill="#1c1c1a">自选 · 8</text>
+      <rect x="262" y="42" width="15" height="15" rx="3" fill="none" stroke="#6b6b66" stroke-width="1"/>
+      <rect x="282" y="42" width="15" height="15" rx="3" fill="none" stroke="#6b6b66" stroke-width="1"/>
+      <rect x="302" y="42" width="15" height="15" rx="3" fill="none" stroke="#6b6b66" stroke-width="1"/>
+      <circle cx="270" cy="49.5" r="3" fill="none" stroke="#6b6b66" stroke-width="1"/>
+      <circle cx="290" cy="49.5" r="3" fill="none" stroke="#6b6b66" stroke-width="1"/>
+      <circle cx="310" cy="49.5" r="3" fill="none" stroke="#6b6b66" stroke-width="1"/>
+      <!-- 指数条 -->
+      <text x="76" y="83" font-size="10" fill="#6b6b66">沪 3809.08</text>
+      <text x="152" y="83" font-size="10" fill="#21866b">-0.12%</text>
+      <text x="196" y="83" font-size="10" fill="#6b6b66">深 12224.2</text>
+      <text x="272" y="83" font-size="10" fill="#21866b">-0.34%</text>
+      <line x1="60" y1="96" x2="340" y2="96" stroke="rgba(28,28,26,.25)" stroke-width="1"/>
+      <!-- 股票行 -->
+      <text x="76" y="120" font-size="11.5" fill="#1c1c1a">贵州茅台</text>
+      <text x="130" y="120" font-size="9" fill="#a3a29c">600519</text>
+      <text x="270" y="120" font-size="11.5" fill="#1c1c1a" text-anchor="end">1283.19</text>
+      <text x="330" y="120" font-size="11.5" fill="#c62f3f" text-anchor="end">+1.25% ▲</text>
+      <!-- 展开行 sparkline -->
+      <rect x="60" y="134" width="280" height="48" fill="rgba(198,47,63,0.045)"/>
+      <polyline points="80,168 96,164 112,166 128,160 144,162 160,156 176,158 192,152 208,154 224,148 240,150 256,144 272,146 288,140 304,142 320,136"
+        fill="none" stroke="#c62f3f" stroke-width="1.3"/>
+      <line x1="80" y1="160" x2="320" y2="160" stroke="rgba(28,28,26,.18)" stroke-width="1" stroke-dasharray="3 3"/>
+      <text x="76" y="176" font-size="8.5" fill="#a3a29c">分时 · 单击行展开 / 收起</text>
+      <!-- 行 2 -->
+      <text x="76" y="206" font-size="11.5" fill="#1c1c1a">平安银行</text>
+      <text x="130" y="206" font-size="9" fill="#a3a29c">000001</text>
+      <text x="270" y="206" font-size="11.5" fill="#1c1c1a" text-anchor="end">11.77</text>
+      <text x="330" y="206" font-size="11.5" fill="#c62f3f" text-anchor="end">+1.55% ▲</text>
+      <!-- 行 3 -->
+      <text x="76" y="232" font-size="11.5" fill="#1c1c1a">宁德时代</text>
+      <text x="130" y="232" font-size="9" fill="#a3a29c">300750</text>
+      <text x="270" y="232" font-size="11.5" fill="#1c1c1a" text-anchor="end">263.80</text>
+      <text x="330" y="232" font-size="11.5" fill="#21866b" text-anchor="end">-0.48% ▼</text>
+      <!-- 行 4 停牌 -->
+      <text x="76" y="258" font-size="11.5" fill="#a3a29c">某停牌股</text>
+      <text x="130" y="258" font-size="9" fill="#a3a29c">600xxx</text>
+      <rect x="244" y="249" width="26" height="12" rx="2" fill="none" stroke="#a3a29c" stroke-width="1"/>
+      <text x="257" y="258" font-size="8" fill="#a3a29c" text-anchor="middle">停牌</text>
+      <text x="330" y="258" font-size="11.5" fill="#a3a29c" text-anchor="end">—</text>
+      <line x1="60" y1="272" x2="340" y2="272" stroke="rgba(28,28,26,.25)" stroke-width="1"/>
+      <!-- 状态条 -->
+      <circle cx="82" cy="292" r="3" fill="#21866b"/>
+      <text x="92" y="296" font-size="9.5" fill="#6b6b66">云端 · 已同步 14:32:05</text>
+      <text x="324" y="296" font-size="9.5" fill="#a3a29c" text-anchor="end">东财 · 5s</text>
+      <!-- 异常黄条示意 -->
+      <rect x="60" y="312" width="280" height="16" fill="rgba(191,144,0,0.1)"/>
+      <line x1="60" y1="312" x2="340" y2="312" stroke="rgba(191,144,0,.4)" stroke-width="1"/>
+      <text x="68" y="323.5" font-size="8.5" fill="#8a6d00">网络异常 · 第 2 次重试 · 数据为 14:31 快照</text>
+      <!-- 标注 -->
+      <g font-size="9.5" fill="#6b6b66">
+        <line x1="340" y1="49" x2="392" y2="49" stroke="#a3a29c" stroke-width="1"/>
+        <text x="398" y="46">拖拽区 + 快捷按钮</text>
+        <text x="398" y="58">（设置 · 穿透 · 隐藏）</text>
+        <line x1="340" y1="83" x2="392" y2="83" stroke="#a3a29c" stroke-width="1"/>
+        <text x="398" y="80">指数条（可关）</text>
+        <line x1="340" y1="158" x2="392" y2="158" stroke="#a3a29c" stroke-width="1"/>
+        <text x="398" y="155">单击行展开分时</text>
+        <line x1="340" y1="292" x2="392" y2="292" stroke="#a3a29c" stroke-width="1"/>
+        <text x="398" y="289">状态条：同步 + 数据源 + 时间</text>
+        <line x1="340" y1="320" x2="392" y2="320" stroke="#a3a29c" stroke-width="1"/>
+        <text x="398" y="317">异常时内嵌黄条提示</text>
+        <line x1="200" y1="360" x2="200" y2="382" stroke="#a3a29c" stroke-width="1"/>
+        <text x="112" y="396">背景板 α 可调（0.35–1.0），文字恒不透明</text>
+        <text x="112" y="410">价格 / 涨跌幅列右对齐 + 等宽数字</text>
+        <text x="112" y="424">停牌行置灰 + 徽标，不参与闪烁</text>
+        <text x="112" y="438">右侧快讯按钮默认隐藏于设置中开启</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>图 3-1 · 修订后的界面结构（标准形态 · 深色主题示意）</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 04 使用方便 ============ -->
+<section id="s4">
+  <div class="sec-head">
+    <div class="sec-kicker">04 / Usability</div>
+    <h2>使用方便：兜底入口与高频操作</h2>
+    <p class="lede">易用性的判断标准不是主流程顺不顺（v1 主流程是顺的），而是<strong>边缘情况有没有出路</strong>：忘记快捷键怎么办、想加一只股票要几步、换个顺序顺不顺手。</p>
+  </div>
+
+  <h3 id="s4-1"><span class="h3-no">4.1</span>托盘：穿透与隐身后的生命线</h3>
+  <div class="prose-block">
+  <p>v1 开启鼠标穿透后，窗口不再响应任何点击，唯一出口是快捷键 ⌥⇧X。用户一旦忘记这个组合键，应用就「锁死」了——看得见、点不着、关不掉。修订：<strong>托盘菜单是永远可达的完整功能入口</strong>，与快捷键双通道冗余：</p>
+  </div>
+
+  <div class="tbl-caption">表 4-1 · 托盘菜单（兜底全量入口）</div>
+  <table>
+    <thead><tr><th style="width:26%">菜单项</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td>显示 / 隐藏小窗</td><td>与老板键等效；隐身后从这里找回</td></tr>
+      <tr><td>鼠标穿透 开/关</td><td>忘快捷键时的恢复通道</td></tr>
+      <tr><td>形态：完整 / 迷你条 / 菜单栏</td><td>三形态直接切换</td></tr>
+      <tr><td>刷新自选</td><td>手动触发一次同步</td></tr>
+      <tr><td>设置…</td><td>外观 / 数据源 / 快捷键 / 账号</td></tr>
+      <tr><td>重新扫码 / 退出登录</td><td>登录态管理</td></tr>
+      <tr><td>退出行情小窗</td><td>唯一退出入口（不驻 Dock）</td></tr>
+    </tbody>
+  </table>
+  <p class="table-note">点击托盘图标默认动作 = 显示 / 隐藏小窗；菜单栏指数文字（v1 已有）保留。</p>
+
+  <h3 id="s4-2"><span class="h3-no">4.2</span>手动模式升级：应用内搜索添加</h3>
+  <div class="prose-block">
+  <p>v1 手动模式只有「粘贴 / 文件导入」——加一只股票要切去东财查代码、复制、切回来粘贴，四步。修订：接入东财<strong>搜索建议接口</strong>（网页版搜索框同源），在小窗内直接输入「茅台」「moutai」「600519」均可实时联想、回车即加，一步完成。粘贴与 .ebk / txt 文件导入保留为批量通道。搜索是手动模式体验的分水岭——它把「手动模式是二等公民」变成了「不登录也挺好用」，同时是云同步接口万一失效时的体验安全网。</p>
+  </div>
+
+  <h3><span class="h3-no">4.3</span>高频操作补全</h3>
+  <div class="prose-block">
+  <p><strong>拖拽排序</strong>：自选顺序是高频调整项，HTML5 原生拖拽 + 排序即时持久化；云端模式下本地排序覆盖云端顺序（仅顺序，增删以云端为准）。<strong>右键菜单</strong>：复制代码 / 在东财打开（调系统浏览器）/ 置顶 / 移入分组 / 删除。<strong>快捷键全面可自定义</strong>：⌥⇧ 系列默认值保留，但全部可在设置中改绑；注册失败（与其他应用冲突）时立即弹提示引导改键，而不是静默失效。<strong>点击行为</strong>：单击行原地展开分时（图 3-1），再点收起——小窗没有「详情页」概念，避免页面跳转破坏悬浮定位。</p>
+  </div>
+</section>
+
+<!-- ============ 05 体验舒适 ============ -->
+<section id="s5">
+  <div class="sec-head">
+    <div class="sec-kicker">05 / Comfort</div>
+    <h2>体验舒适：首启、形态分级与状态全景</h2>
+    <p class="lede">舒适 = 用户在任何时刻都知道发生了什么、下一步能做什么，且不被打扰。v1 定义了正常态，这里补齐其余所有时刻。</p>
+  </div>
+
+  <h3><span class="h3-no">5.1</span>首次启动：30 秒 onboarding</h3>
+  <div class="prose-block">
+  <p>首次打开是一个空窗口——v1 没有回答这一刻。修订：三步引导，<strong>选模式</strong>（手动 / 云端，各配一句说明）→ <strong>加自选</strong>（搜索框 + 预置示例组合「上证指数 + 沪深 300ETF + 贵州茅台」一键试用）→ <strong>调外观</strong>（主题 / 字号 / 背景浓度三个滑杆即时预览）。全程 ≤ 30 秒，任何一步都可跳过。空列表态显示引导文案而非空白。</p>
+  </div>
+
+  <h3><span class="h3-no">5.2</span>形态分级：老板键不一定等于消失</h3>
+  <div class="prose-block">
+  <p>v1 的老板键（⌥⇧H）语义是「完全隐藏」。修订为<strong>四级形态连续体</strong>：完整 → 低调（背景浓度降至 0.35 + 字号降一档）→ 迷你条（双击标题栏收成一行细条）→ 菜单栏（窗口完全退场，菜单栏保留「沪 3809 -0.12%」小字）。老板键默认行为改为<strong>切到菜单栏形态</strong>——比彻底消失更实用：注意力离开屏幕的几秒里仍能瞄到指数，「完全隐藏」作为可选配置保留。再进一步，「伪装模式」（显示为一段代码 / 笔记的静态截图）列入二期。</p>
+  </div>
+
+  <h3 id="s5-1"><span class="h3-no">5.3</span>状态全景</h3>
+  <div class="prose-block">
+  <p>每个异常态都有明确的界面反馈与数据行为——这是「功能可靠」在体验侧的落点，也是 v1 最大的空白：</p>
+  </div>
+
+  <div class="tbl-caption">表 5-1 · 全状态设计（8 态）</div>
+  <table>
+    <thead><tr><th style="width:13%">状态</th><th style="width:24%">触发条件</th><th style="width:33%">界面表现</th><th>数据行为</th></tr></thead>
+    <tbody>
+      <tr><td>首次启动</td><td>无本地配置</td><td>三步引导（§5.1）</td><td>预置示例自选，可一键清空</td></tr>
+      <tr><td>正常</td><td>行情拉取成功</td><td>状态条绿点 + 已同步时间 + 数据源</td><td>—</td></tr>
+      <tr><td>网络异常</td><td>连续 2 次请求失败</td><td>内嵌黄条「网络异常 · 第 n 次重试」，数字变灰</td><td>保留快照；1 s / 2 s / 4 s 退避</td></tr>
+      <tr><td>备源降级</td><td>主源连续 3 次失败</td><td>状态条标注「新浪备源」</td><td>切 qt.gtimg.cn；主源 60 s 探活切回</td></tr>
+      <tr><td>登录过期</td><td>自选接口返回未登录态</td><td>黄点 + 「重新扫码」按钮 + 托盘通知</td><td>行情照常；自选沿用快照</td></tr>
+      <tr><td>个股停牌</td><td class="mono">f2 字段返回 "-"</td><td>该行置灰 + 「停牌」徽标（图 3-1）</td><td>不参与闪烁与变动比较</td></tr>
+      <tr><td>接口变更</td><td>返回结构缺字段 / 状态异常</td><td>托盘通知 + 引导切手动模式</td><td>数据层隔离，仅重写适配模块</td></tr>
+      <tr><td>已收盘</td><td>时段状态机判定</td><td>状态条「已收盘」；涨跌色定色不再变化</td><td>停刷转心跳（表 2-1）</td></tr>
+    </tbody>
+  </table>
+
+  <h3><span class="h3-no">5.4</span>记忆与覆盖面</h3>
+  <div class="prose-block">
+  <p><strong>记忆一切</strong>：窗口位置与尺寸（分屏幕记忆，接外接显示器不跑位）、当前形态、展开的股票、滚动位置、上次分组——重启后全部如旧。<strong>代码覆盖面</strong>：用户是东方财富重度用户，自选里大概率不止 A 股。解析器覆盖：</p>
+  </div>
+
+  <div class="tbl-caption">表 5-2 · 代码写法解析（含歧义消解规则）</div>
+  <table>
+    <thead><tr><th style="width:24%">写法</th><th style="width:34%">解析</th><th class="num">secid 前缀</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">600519 / 000001 / 300750 / 688981</td><td>沪主板（6 开头）/ 深主板（0 开头）/ 创业板 / 科创板</td><td class="num mono">1 / 0 / 0 / 1</td></tr>
+      <tr><td class="mono">sh000001 · 000001.SH</td><td>上证指数——裸写 000001 默认深市个股，<strong>带前缀消歧</strong>（v1 已有，保留）</td><td class="num mono">1</td></tr>
+      <tr><td class="mono">510300 / 159915</td><td>沪 ETF（5 开头）/ 深 ETF（1 开头）</td><td class="num mono">1 / 0</td></tr>
+      <tr><td class="mono">833171 · 430047</td><td>北交所</td><td class="num mono">0</td></tr>
+      <tr><td class="mono">00700 · 00700.HK</td><td>港股</td><td class="num mono">116</td></tr>
+      <tr><td class="mono">AAPL · AAPL.O</td><td>美股（默认纳斯达克；后缀消歧交易所）</td><td class="num mono">105 / 106</td></tr>
+      <tr><td class="mono">茅台 · gzmt · MAOTAI</td><td>走搜索接口选择（§4.2）</td><td class="num mono">—</td></tr>
+    </tbody>
+  </table>
+  <p class="table-note">前缀映射以解析器单元测试固化，开发期对照东财实测校正；港美股 / 北交所行情字段以实测为准。</p>
+</section>
+
+<!-- ============ 06 修订后实现方案 ============ -->
+<section id="s6">
+  <div class="sec-head">
+    <div class="sec-kicker">06 / Implementation</div>
+    <h2>修订后的实现方案</h2>
+    <p class="lede">保留 v1 的整体架构判断（Electron、网络收在主进程、凭据不进渲染层），在其上叠加本次评审的全部修订。</p>
+  </div>
+
+  <h3 id="s6-1"><span class="h3-no">6.1</span>架构</h3>
+  <div class="arch">
+    <div class="blk">
+      <div class="blk-title">主进程 · 窗口层</div>
+      <div class="blk-body">主窗<span class="mono">（透明分离 · vibrancy · 置顶 · 穿透 · 位置记忆）</span> · 登录窗<span class="mono">（独立 partition · webRequest 抓包固化自选接口）</span> · 托盘<span class="mono">（表 4-1 兜底菜单）</span> · 全局快捷键<span class="mono">（可自定义 · 冲突检测）</span> · IPC 路由<span class="mono">（渲染层唯一通道）</span></div>
+    </div>
+    <div class="connector">↓ 仅通过 IPC 通信 · 渲染层零网络请求、零凭据接触（保留 v1 原则）</div>
+    <div class="blk">
+      <div class="blk-title">主进程 · 核心层（零 Electron 依赖 · 可单元测试）</div>
+      <div class="blk-body">
+        market：<span class="mono">quote（行情 · fltt=2 精度 · &gt;50 只分批）· fallback（新浪备源 · 探活切换）· search（搜索添加）· trends（分时）· news（7×24）· session（交易时段状态机，表 2-1）</span><br>
+        sync：<span class="mono">watchlist（云自选 · 分组映射 · 三分类失败处理）· cookie-vault（safeStorage · 域名白名单）</span><br>
+        <span class="mono">code-parser（表 5-2）· retry（超时 · 指数退避）</span>
+      </div>
+    </div>
+    <div class="connector">↓</div>
+    <div class="blk">
+      <div class="blk-title">主进程 · 存储层</div>
+      <div class="blk-body"><span class="mono">settings（原子写 + 双备份回滚）· snapshot（行情 / 自选快照）· logs（滚动 7 天 · 强制脱敏）</span></div>
+    </div>
+    <div class="connector">↓ IPC 推送（结构化克隆）</div>
+    <div class="blk">
+      <div class="blk-title">渲染层</div>
+      <div class="blk-body">组件<span class="mono">（StockRow · IndexBar · Sparkline · StatusBar · Settings · NewsPanel · Onboarding）</span> · 状态机<span class="mono">（表 5-1 八态）</span> · 主题<span class="mono">（表 3-1 token）</span> · 全部动效仅 <span class="mono">transform / opacity</span></div>
+    </div>
+  </div>
+
+  <h3 id="s6-2"><span class="h3-no">6.2</span>项目结构</h3>
+<pre><code>stock-widget/
+├─ package.json
+├─ electron-builder.yml            # M4 打包配置
+├─ src/
+│  ├─ main/                        # 主进程
+│  │  ├─ index.ts                  # 生命周期 · 单实例锁 · 崩溃恢复
+│  │  ├─ window.ts                 # 主窗：透明分离 · 置顶 · 穿透 · 位置记忆
+│  │  ├─ login-window.ts           # 登录窗：独立 partition · 抓包固化
+│  │  ├─ tray.ts                   # 托盘：兜底菜单总入口（表 4-1）
+│  │  ├─ shortcuts.ts              # 快捷键：可自定义 · 冲突检测
+│  │  └─ ipc.ts                    # IPC 路由：渲染层唯一通道
+│  ├─ core/                        # 核心逻辑（零 Electron 依赖 · 可单测）
+│  │  ├─ market/                   # quote · fallback · search · trends · news · session
+│  │  ├─ sync/                     # watchlist · cookie-vault
+│  │  ├─ code-parser.ts            # 多写法代码解析（表 5-2）
+│  │  └─ retry.ts                  # 超时 · 指数退避
+│  ├─ store/                       # settings（原子写）· snapshot
+│  ├─ renderer/                    # 组件 · 状态机 · 主题 token
+│  └─ shared/types.ts
+└─ tests/                          # 时段状态机 / 代码解析 / 退避 优先覆盖</code></pre>
+
+  <h3 id="s6-3"><span class="h3-no">6.3</span>技术决策对照（v1 → v2 完整清单）</h3>
+
+  <div class="tbl-caption">表 6-1 · 20 项修订总表</div>
+  <table>
+    <thead><tr><th class="num" style="width:5%">#</th><th style="width:17%">决策点</th><th style="width:33%">v1</th><th style="width:33%">v2 修订</th><th>优先级</th></tr></thead>
+    <tbody>
+      <tr><td class="num">01</td><td>透明实现</td><td><del class="v1">win.setOpacity() 15–100%</del></td><td><ins class="v2">transparent 窗口 + 背景板 α 独立调节，文字恒不透明（§1）</ins></td><td><span class="tag p0">P0</span></td></tr>
+      <tr><td class="num">02</td><td>玻璃质感</td><td>无</td><td><ins class="v2">vibrancy: under-window，可关</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">03</td><td>数字字体</td><td>未定义</td><td><ins class="v2">tabular-nums，价格跳动不抖</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">04</td><td>主题</td><td>未定义</td><td><ins class="v2">跟随系统深浅色 + 手动锁定，默认深色</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">05</td><td>涨跌色</td><td>红涨绿跌固定</td><td><ins class="v2">可互换 + ▲▼ 符号冗余（色弱友好）</ins></td><td><span class="tag">P2</span></td></tr>
+      <tr><td class="num">06</td><td>动效</td><td>「变动闪烁」</td><td><ins class="v2">单次 300 ms 脉冲（非持续闪烁），全局可关</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">07</td><td>老板键</td><td>⌥⇧H 完全隐藏</td><td><ins class="v2">默认切菜单栏形态（仍可瞄指数），完全隐藏可配置</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">08</td><td>行情数据源</td><td>东财单源</td><td><ins class="v2">东财主 + 新浪备，自动降级 / 探活切回</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">09</td><td>刷新策略</td><td>固定 3 / 5 / 10 / 30 s</td><td><ins class="v2">交易时段状态机驱动（表 2-1）</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">10</td><td>手动模式入口</td><td>粘贴 / 文件导入</td><td><ins class="v2">应用内搜索添加（一步）+ 粘贴 / 文件保留</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">11</td><td>快捷键</td><td>固定 ⌥⇧ 系列</td><td><ins class="v2">全部可自定义 + 注册冲突即时提示</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">12</td><td>排序 / 右键</td><td>未定义</td><td><ins class="v2">拖拽排序持久化；右键：复制 / 东财打开 / 置顶 / 删除</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">13</td><td>云自选分组</td><td>未定义</td><td><ins class="v2">云端分组映射为 tab，默认「全部」</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">14</td><td>异常状态</td><td>仅 Cookie 过期黄点</td><td><ins class="v2">八态全景（表 5-1），失败三分类</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">15</td><td>持久化</td><td>未定义实现</td><td><ins class="v2">原子写 + 双备份回滚</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">16</td><td>日志</td><td>无</td><td><ins class="v2">electron-log 滚动 7 天，Cookie / 手机号脱敏</ins></td><td><span class="tag">P2</span></td></tr>
+      <tr><td class="num">17</td><td>崩溃恢复</td><td>未定义</td><td><ins class="v2">渲染进程自动重建 + 单实例锁</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">18</td><td>性能预算</td><td>无</td><td><ins class="v2">空闲 CPU≈0；盘中 CPU &lt;2% · 内存 &lt;300 MB；动效仅 transform / opacity</ins></td><td><span class="tag">P1</span></td></tr>
+      <tr><td class="num">19</td><td>首次启动</td><td>未定义</td><td><ins class="v2">三步 onboarding ≤ 30 s + 空列表引导态</ins></td><td><span class="tag">P2</span></td></tr>
+      <tr><td class="num">20</td><td>市场覆盖</td><td>A 股 + 指数（隐含）</td><td><ins class="v2">显式覆盖 A 股 / 指数 / ETF / 北交所 / 港美股（表 5-2）</ins></td><td><span class="tag">P2</span></td></tr>
+    </tbody>
+  </table>
+  <p class="table-note">P0 = 不修正则核心诉求互斥；P1 = 影响可靠 / 易用，进第一轮开发；P2 = 体验打磨，随里程碑落地。</p>
+
+  <h3 id="s6-4"><span class="h3-no">6.4</span>数据接口清单</h3>
+  <div class="tbl-caption">表 6-2 · 接口与验证状态</div>
+  <table>
+    <thead><tr><th style="width:17%">用途</th><th style="width:37%">端点</th><th style="width:26%">关键参数</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr><td>实时行情（批量）</td><td class="mono">push2.eastmoney.com/api/qt/ulist.np/get</td><td class="mono">fltt=2 · fields=f2,f3,f4,f12,f13,f14,f18 · secids=市场.代码,...</td><td><span class="tag">v1 已实测</span></td></tr>
+      <tr><td>股票搜索</td><td class="mono">searchapi.eastmoney.com /api/suggest/get</td><td class="mono">input=关键词 · type=14</td><td><span class="tag">待实测</span></td></tr>
+      <tr><td>分时序列</td><td class="mono">push2his.eastmoney.com /api/qt/stock/trends2/get</td><td class="mono">secid · fields2=f51,f53,f56,f58 · iscr=0</td><td><span class="tag">同族待验证</span></td></tr>
+      <tr><td>7×24 快讯</td><td class="mono">沿用 v1 已实测端点</td><td class="mono">—</td><td><span class="tag">已实测</span></td></tr>
+      <tr><td>云端自选 · 分组列表</td><td class="mono">myfavor.eastmoney.com/v4/webouter/ggdefstkindexinfos</td><td class="mono">GET · Cookie 会话 · 固定 appkey · JSONP</td><td><span class="tag">已静态确认</span></td></tr>
+      <tr><td>云端自选 · 组内股票</td><td class="mono">myfavor.eastmoney.com/v4/webouter/gstkinfos?g=&lt;gid&gt;</td><td class="mono">同上 · 返回 stkinfolist / star / note</td><td><span class="tag">已静态确认</span></td></tr>
+      <tr><td>备源行情</td><td class="mono">qt.gtimg.cn/q=sh600519,sz000001</td><td class="mono">多代码逗号拼接 · ~ 分隔字段</td><td><span class="tag">待接入验证</span></td></tr>
+    </tbody>
+  </table>
+  <p class="table-note">所有参数以开发期实测为准。数据层按「适配器」模式实现——接口变动只重写对应适配器，UI 与状态机不动。</p>
+
+  <div class="prose-block">
+  <p><strong>云端自选契约（2026-10-12 静态逆向 + 在线探测确认）。</strong>自选数据服务独立于行情服务，宿主为 <code class="inline">myfavor.eastmoney.com/v4/</code>：登录态走 <code class="inline">webouter/</code> 前缀，鉴权完全依赖 Cookie 会话，公共参数只有一个固定 appkey，<strong>无任何动态加密参数</strong>（v1 担心的 dtoken 风险就此排除）。两个核心端点：<code class="inline">ggdefstkindexinfos</code> 返回全部分组（ginfolist：gid + gname，另附 webindex 自定义排序）；<code class="inline">gstkinfos?g=&lt;gid&gt;</code> 返回组内股票（stkinfolist：security 代码、star 置顶标记、note 买卖备注、price / updatetime）。错误语义已实测：游客态缺设备指纹 bid 时返回 <span class="mono">state:-12「BID解析失败」</span>，登录态不涉及该参数。服务自带降级域名（myfavor1）与探活端点（state.html），页面同款机制照搬即可。剩余动态复核仅一项：登录 Cookie 的具体有效组合——扫码后一次 5 分钟验证即可闭环。</p>
+  </div>
+
+  <h3 id="s6-5"><span class="h3-no">6.5</span>安全设计（v1 保留 + 三项补充）</h3>
+  <div class="prose-block">
+  <p>v1 的四条原则全部保留：全程扫码不触密码、Cookie 经 safeStorage 加密本地存储、请求硬编码只发 <span class="mono">*.eastmoney.com</span> 域、过期不静默失败。补充三项：<strong>日志强制脱敏</strong>（Cookie、手机号、uid 永不入日志）；<strong>UA / Referer 对齐网页版</strong>（降低风控误伤，也避免特征暴露）；<strong>只读原则</strong>——应用对云端自选只读同步，不在应用内提供增删云端自选的操作（避免误同步覆盖手机端的列表；本地增删仅作用于手动模式）。备源仅访问 qt.gtimg.cn 一个只读端点，域名白名单相应扩展。</p>
+  </div>
+
+  <h3 id="s6-6"><span class="h3-no">6.6</span>里程碑（预估工时）</h3>
+  <div class="tbl-caption">表 6-3 · M0–M4 与验收标准</div>
+  <table>
+    <thead><tr><th style="width:16%">里程碑</th><th style="width:36%">内容</th><th style="width:36%">验收标准</th><th class="num">预估</th></tr></thead>
+    <tbody>
+      <tr><td>M0 骨架</td><td>窗口体系（透明分离 / vibrancy / 置顶 / 穿透 / 位置记忆）、托盘、快捷键可自定义、IPC、设置骨架</td><td>三形态切换流畅；开启穿透后仅靠托盘可恢复全部功能</td><td class="num">0.5 天</td></tr>
+      <tr><td>M1 行情核心</td><td>搜索 / 粘贴 / 文件三通道导入、行情（时段感知 / 备源 / 精度 / 分批）、指数条、状态条八态、排序 / 右键</td><td>与东财 App 抽查 10 只价格一致；收盘后自动停刷；断网 30 s 内出现黄条且界面不卡</td><td class="num">1 天</td></tr>
+      <tr><td>M2 观感体验</td><td>design token 全量、深浅主题、脉冲动效、迷你过渡、onboarding、全量记忆恢复</td><td>价格跳动无布局抖动；深浅色即时正确；首启 30 s 完成引导；重启后一切如旧</td><td class="num">1 天</td></tr>
+      <tr><td>M3 云同步</td><td>登录窗、对接 myfavor 自选接口（契约已逆向确认，见 §6.4）、Cookie vault、轮询同步、过期检测、分组 tab</td><td>手机改自选 ≤ 60 s 反映；手动清 Cookie 后出现黄点可重扫</td><td class="num">0.5 天*</td></tr>
+      <tr><td>M4 增强打包</td><td>行内分时 sparkline、快讯面板（默认折叠）、.app 打包、开机自启</td><td>无 Node 环境的 Mac 可直接运行</td><td class="num">0.5–1 天</td></tr>
+    </tbody>
+  </table>
+  <p class="table-note">* M3 需用户在场扫码配合一次；M4 依赖 M2 + M3。工时为单人专注预估。</p>
+
+  <h3 id="s6-7"><span class="h3-no">6.7</span>风险登记册（更新版）</h3>
+  <div class="tbl-caption">表 6-4 · 风险与对策</div>
+  <table>
+    <thead><tr><th style="width:30%">风险</th><th style="width:9%">等级</th><th>对策</th><th style="width:12%">残余</th></tr></thead>
+    <tbody>
+      <tr><td><del class="v1">自选接口带动态加密参数（dtoken 等）</del> → 已排除</td><td>低</td><td>2026-10-12 逆向确认：myfavor 接口为普通 GET + Cookie + 固定 appkey，无加密参数；游客态错误语义（state:-12）亦已知</td><td>极低</td></tr>
+      <tr><td>东财行情接口变更</td><td>低</td><td>新浪备源自动接管；适配器模式隔离改动面</td><td>极低</td></tr>
+      <tr><td>全局快捷键冲突</td><td>低</td><td>全部可自定义 + 注册失败即时提示</td><td>低</td></tr>
+      <tr><td>Electron 常驻内存偏高</td><td>低</td><td>预算 &lt; 300 MB 可接受；核心层零 Electron 依赖，将来可平移 Tauri</td><td>可接受</td></tr>
+      <tr><td>接口风控</td><td>低</td><td>频率低于网页版自身（5 s 行情 / 60 s 自选）；UA / Referer 对齐</td><td>低</td></tr>
+      <tr><td>上班看盘合规</td><td>—</td><td>仅个人只读使用；不提供任何交易功能</td><td>用户自理</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 07 待拍板 ============ -->
+<section id="s7">
+  <div class="sec-head">
+    <div class="sec-kicker">07 / Decisions</div>
+    <h2>待拍板事项</h2>
+    <p class="lede">v1 遗留三问保留，本次评审新增两问。每项都附建议，拍板后即可从 M0 开工。</p>
+  </div>
+
+  <div class="tbl-caption">表 7-1 · 决策清单</div>
+  <table>
+    <thead><tr><th class="num" style="width:5%">#</th><th style="width:30%">事项</th><th style="width:35%">选项</th><th>建议</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>云端与手动列表的关系</td><td>互斥切换（切换不丢数据） / 合并显示</td><td>互斥——合并去重逻辑复杂且易错，分组 tab（§2.2）已解决组织问题</td></tr>
+      <tr><td class="num">2</td><td>分时小图、快讯的期次</td><td>一期 / 二期</td><td>分时进一期（接口同族，行内展开是体验亮点）；快讯进一期但默认折叠、按需开启——满足「浏览」诉求又不占默认空间</td></tr>
+      <tr><td class="num">3</td><td>应用名</td><td>「行情小窗」为默认</td><td>维持默认，打包时可再定</td></tr>
+      <tr><td class="num">4</td><td><strong>老板键默认行为</strong>（新增）</td><td>切菜单栏形态 / 完全隐藏</td><td>切菜单栏——还能瞄指数；隐藏党可在设置改</td></tr>
+      <tr><td class="num">5</td><td><strong>默认主题</strong>（新增）</td><td>跟随系统 / 固定深色</td><td>跟随系统——与桌面一致才不突兀；浅色下背景板 α 同样可调</td></tr>
+    </tbody>
+  </table>
+
+  <div class="prose-block">
+  <p style="margin-top:26px">以上 20 项修订、5 项待拍板，确认后按 M0 → M4 顺序执行；M3 需要扫码配合一次，其余里程碑均可独立验收。</p>
+  </div>
+
+  <div class="tbl-caption" style="margin-top:34px">附 · 实现记录（2026-10-12 当日）</div>
+  <table>
+    <thead><tr><th style="width:30%">项</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr><td>M0–M2 + M4 配置</td><td>已实现：透明分离窗口、置顶、穿透、位置记忆、托盘全量入口、可自定义快捷键、搜索/粘贴/文件三通道导入、行情主备源、时段感知、快照、原子写存储、脱敏日志、崩溃重建、单实例锁、分时展开、快讯面板、引导、设置窗、打包配置</td></tr>
+      <tr><td>M3 云同步</td><td>代码已就绪（登录窗 + myfavor 对接 + 分组 tab + 三分类失败）；登录链路需你现场扫码验证一次</td></tr>
+      <tr><td>单元测试</td><td>37/37 通过（代码解析 / 时段状态机 / 退避 / security 解析 / 存储回滚）</td></tr>
+      <tr><td>冒烟自检</td><td>通过：真实数据拉取 + 自动截图，截图审查发现的 4 项视觉问题（指数条贴边 / 代码列不齐 / 停牌行错位 / 窗口高度）已全部修复并复验</td></tr>
+      <tr><td>接口实测定稿</td><td>关键修正：行情端点 ulist.np 已失效 → 改用 ulist/get 且必须带分页参数；快讯接口必须带 req_trace；其余四个接口按预期可用</td></tr>
+      <tr><td>登录链路实测闭环（同日返修）</td><td>扫码后应用侧探测不通的三层原因逐一修复：① 手动 setHeader('Referer') 被 Chromium 以 invalid referrer 取消 → 改进方案；② net.request 的 referrer 选项实际不发送该头、服务端强制要求 Referer → 唯一可靠通道是 onBeforeSendHeaders 注入；③ 接口无 cb 参数时返回空 body；④ security 真实格式为「市场号$代码$时间戳」。修复后用真实账号验证：16 个分组 / 644 只自选全部拉通，单元测试扩至 43 项</td></tr>
+    </tbody>
+  </table>
+
+  <div class="colophon">
+    <b>评审输入</b> — v1 设计方案全文（用户提供对话纪要）· 东财接口公开生态常识<br>
+    <b>补充核验</b> — 2026-10-12 二次核验：myfavor 自选服务 API 静态逆向（生产前端源码）+ 游客态在线探测<br>
+    <b>修订范围</b> — 仅方案设计；无应用代码产出，工作区除本文档外无生成物<br>
+    <b>排版</b> — 单文件 HTML · 无外部依赖 · macOS Safari / Chrome 直读<br>
+    <b>行情小窗 · 方案评审与实现细化 v2.1</b> — 2026-10-12
+  </div>
+</section>
+
+</main>
+</div>
+
+<script>
+(function(){
+  // widget A: setOpacity 模拟
+  var sA=document.getElementById('sliderA'),wA=document.getElementById('winA'),vA=document.getElementById('valA');
+  if(sA){sA.addEventListener('input',function(){wA.style.opacity=sA.value;vA.textContent=Math.round(sA.value*100)+'%';});}
+  // widget B: 背景 alpha 模拟
+  var sB=document.getElementById('sliderB'),wB=document.getElementById('winB'),vB=document.getElementById('valB');
+  if(sB){sB.addEventListener('input',function(){wB.style.background='rgba(24,26,31,'+sB.value+')';vB.textContent=Math.round(sB.value*100)+'%';});}
+  // TOC scrollspy
+  var links=Array.prototype.slice.call(document.querySelectorAll('#toc a[href^="#"]'));
+  var map={};
+  links.forEach(function(a){var id=a.getAttribute('href').slice(1);map[id]=a;});
+  var obs=new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if(e.isIntersecting){
+        links.forEach(function(a){a.classList.remove('active');});
+        var a=map[e.target.id];
+        if(a){a.classList.add('active');}
+      }
+    });
+  },{rootMargin:'-15% 0px -70% 0px'});
+  ['s0','s1','s1-demo','s2','s2-1','s2-2','s2-3','s3','s3-1','s3-2','s4','s4-1','s4-2','s5','s5-1','s5-2','s6','s6-1','s6-2','s6-3','s6-4','s6-5','s6-6','s6-7','s7'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(el){obs.observe(el);}
+  });
+})();
+</script>
+</body>
+</html>

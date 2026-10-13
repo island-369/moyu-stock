@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>设置</title>
+<link rel="stylesheet" href="settings.css">
+</head>
+<body>
+<div id="sp">
+
+  <section>
+    <h3>外观</h3>
+    <label class="frow">主题
+      <select id="theme">
+        <option value="auto">跟随系统</option>
+        <option value="dark">深色</option>
+        <option value="light">浅色</option>
+      </select>
+    </label>
+    <label class="frow">字号
+      <select id="fontSize">
+        <option value="mini">迷你</option>
+        <option value="compact">紧凑</option>
+        <option value="standard">标准</option>
+        <option value="large">大</option>
+      </select>
+    </label>
+    <label class="frow">背景浓度
+      <input type="range" id="bgAlpha" min="35" max="100" step="5">
+    </label>
+    <label class="frow">毛玻璃质感（浓度 ≥55% 时生效）
+      <input type="checkbox" id="vibrancy">
+    </label>
+    <label class="frow">变动脉冲
+      <input type="checkbox" id="pulse">
+    </label>
+    <label class="frow">单色模式（去红绿）
+      <input type="checkbox" id="monoMode">
+    </label>
+    <p class="dim small">涨跌颜色是最显眼的暴露特征。单色模式下所有数字统一中性色，方向看正负号；与低背景浓度叠加使用效果最佳。</p>
+    <label class="frow">显示股票代码
+      <input type="checkbox" id="showCode">
+    </label>
+    <label class="frow">显示指数条
+      <input type="checkbox" id="showIndexBar">
+    </label>
+    <label class="frow">窗口宽度自适应内容
+      <input type="checkbox" id="autoWidth">
+    </label>
+    <label class="frow">窗口高度自适应内容
+      <input type="checkbox" id="autoHeight">
+    </label>
+  </section>
+
+  <section>
+    <h3>数据与自选</h3>
+    <div class="seg" id="mode">
+      <button data-v="manual">手动列表</button>
+      <button data-v="cloud">云端自选（东方财富）</button>
+    </div>
+    <label class="frow">刷新间隔（交易时段）
+      <select id="refreshInterval">
+        <option value="3000">3 秒</option>
+        <option value="5000">5 秒</option>
+        <option value="10000">10 秒</option>
+        <option value="30000">30 秒</option>
+      </select>
+    </label>
+
+    <div id="manualbox">
+      <h4>手动列表</h4>
+      <div id="mlist" class="mlist"></div>
+      <textarea id="importbox" rows="3" placeholder="粘贴代码导入，每行一个：600519 / sh000001 / AAPL / 00700.HK"></textarea>
+      <div class="btnrow">
+        <button class="btn" id="import-btn">导入</button>
+        <button class="btn" id="import-file-btn">从文件导入 (.txt / .ebk)</button>
+        <input type="file" id="importfile" accept=".txt,.ebk,.csv" hidden>
+      </div>
+      <div id="importmsg" class="dim"></div>
+    </div>
+
+    <div id="posbox">
+      <h4>持仓列表（本地维护 · 非交易账户）</h4>
+      <textarea id="posimport" rows="3" placeholder="每行一个持仓股，成本可选：&#10;600519 1283.19&#10;000001 11.5 2000"></textarea>
+      <div class="btnrow"><button class="btn" id="pos-import-btn">导入 / 更新</button><span id="posmsg" class="dim"></span></div>
+      <div id="poslist" class="mlist"></div>
+      <p class="dim small">导入后小窗分组里会出现「持仓」，显示这些股票的实时行情（与东财账户无关，不填成本就不显示盈亏）。买卖后回这里更新即可。</p>
+    </div>
+
+    <div id="cloudbox">
+      <h4>云端自选</h4>
+      <div class="frow">
+        <span id="cloudstate" class="dim">状态获取中…</span>
+        <span class="btnrow">
+          <button class="btn" id="login-btn">扫码登录</button>
+          <button class="btn ghost" id="logout-btn">退出登录</button>
+        </span>
+      </div>
+      <p class="dim small">
+        登录后自动同步账号内全部自选分组（60 秒轮询）。全程扫码，应用不接触账号密码；
+        会话保存在本机加密存储，仅发往 *.eastmoney.com。云端为只读同步——在手机 App 上增删自选即可，小窗自动跟上。
+      </p>
+    </div>
+
+    <label class="frow">7×24 快讯面板
+      <input type="checkbox" id="newsEnabled">
+    </label>
+    <label class="frow">排序方式
+      <select id="sortMode">
+        <option value="default">默认（自选顺序）</option>
+        <option value="pct-desc">涨幅 ↓（异动在前）</option>
+        <option value="pct-asc">跌幅 ↓</option>
+        <option value="price-desc">价格 高→低</option>
+        <option value="price-asc">价格 低→高</option>
+      </select>
+    </label>
+  </section>
+
+  <section>
+    <h3>涨跌提醒 · 摸鱼核心</h3>
+    <label class="frow">自选异动提醒
+      <input type="checkbox" id="alertEnabled">
+    </label>
+    <label class="frow">提醒方式
+      <select id="alertStyle">
+        <option value="banner">系统通知（横幅）</option>
+        <option value="menubar">菜单栏信号 ▲▼（最低调，不弹窗）</option>
+        <option value="silent">静默（仅小窗内黄条）</option>
+      </select>
+    </label>
+    <label class="frow">低调通知（标题/正文不出现股票名与价格）
+      <input type="checkbox" id="alertLowKey">
+    </label>
+    <label class="frow">提醒阈值（涨跌幅绝对值）
+      <select id="alertThreshold">
+        <option value="2">±2%</option>
+        <option value="3">±3%</option>
+        <option value="5">±5%</option>
+        <option value="8">±8%</option>
+        <option value="10">±10%</option>
+      </select>
+    </label>
+    <label class="frow">收盘战报（交易日 15:05）
+      <input type="checkbox" id="summaryEnabled">
+    </label>
+    <p class="dim small">盘中自选涨跌幅越过阈值时提醒你，每只股票每个方向每日只一次，不轰炸。菜单栏信号模式：只在右上角「沪…」旁标一个 ▲/▼，异动自己找你且零暴露。隐身/会议期间提醒自动静默累积，唤回小窗后一次性展示。</p>
+  </section>
+
+  <section>
+    <h3>行为</h3>
+    <label class="frow">老板键行为
+      <select id="bossKeyAction">
+        <option value="menubar">切菜单栏形态（仍可看指数）</option>
+        <option value="hide">完全隐藏（菜单栏文字也清空）</option>
+      </select>
+    </label>
+    <label class="frow">在 Dock 显示图标
+      <input type="checkbox" id="dockIcon">
+    </label>
+    <label class="frow">开机自启
+      <input type="checkbox" id="launchAtLogin">
+    </label>
+    <p class="dim small">开启后像普通应用：最小化进 Dock、点 Dock 图标恢复、出现在 ⌘Tab；关闭则完全隐形，仅菜单栏托盘可见。开机自启：上班开机即有，省掉"手动开应用"这个动作。</p>
+    <label class="frow">防录屏保护（共享屏幕/录屏/截屏时窗口不可见）
+      <input type="checkbox" id="contentProtection">
+    </label>
+    <p class="dim small">开会共享屏幕、录屏、他人截屏时窗口内容不会被捕捉（macOS 内容保护）。配合会议模式（⌥⇧M）使用：一键隐身 + 防录屏 + 提醒静默，散会再按一次原样恢复。</p>
+    <h4>全局快捷键 <span class="dim small">点击「录制」后按下新组合键，Esc 取消</span></h4>
+    <div class="btnrow" style="margin-bottom:6px"><button class="btn" id="sc-reset">恢复默认快捷键</button></div>
+    <div id="scrows"></div>
+  </section>
+
+  <section>
+    <h3>关于</h3>
+    <p class="dim small">
+      行情小窗 v0.1.0 · 个人自用工具<br>
+      数据来自东方财富 / 腾讯公开网页接口，非官方，仅供个人参考，不构成任何投资建议；
+      实时性可能比官方客户端略慢。本应用不提供交易功能。
+    </p>
+  </section>
+
+</div>
+<script src="settings.js"></script>
+</body>
+</html>
