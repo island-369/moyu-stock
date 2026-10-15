@@ -65,6 +65,16 @@
     <div id="addresults"></div>
   </div>
 
+  <div id="alertpop" hidden>
+    <div class="ap-head"><b id="ap-name">—</b><span id="ap-price" class="dim"></span></div>
+    <div class="vrow"><span class="vlabel">涨到 ≥</span><input id="ap-gte" type="number" step="0.01" min="0" placeholder="不提醒" spellcheck="false" autocomplete="off"></div>
+    <div class="vrow"><span class="vlabel">跌到 ≤</span><input id="ap-lte" type="number" step="0.01" min="0" placeholder="不提醒" spellcheck="false" autocomplete="off"></div>
+    <button class="btn" id="ap-add">设置提醒（持续有效 · 到价屏上弹窗）</button>
+    <button class="linklike" id="ap-preview">预览 / 调整弹窗位置</button>
+    <div id="ap-list"></div>
+    <div class="ap-hint dim">每次突破到价提醒一次，回到条件外自动重新布防，删除前一直有效；可两个方向同时设</div>
+  </div>
+
   <div id="vispop" hidden>
     <div class="vrow">
       <span class="vlabel">背景浓度</span>
@@ -87,6 +97,10 @@
         <button class="vbtn" data-v="price-desc">价高↓</button>
         <button class="vbtn" data-v="price-asc">价低↑</button>
       </span>
+    </div>
+    <div class="vrow">
+      <span class="vlabel">列表滚动 <span class="dim">(悬停暂停)</span></span>
+      <button class="vbtn" id="vscroll">启动</button>
     </div>
     <div class="vrow">
       <span class="vlabel">鼠标穿透</span>

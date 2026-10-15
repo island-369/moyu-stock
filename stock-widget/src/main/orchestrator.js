@@ -1,7 +1,9 @@
 'use strict';
 /**
  * 轮询编排器（核心状态机）：
- *  - 行情：主源东财 → 连续 3 次失败切腾讯备源 → 60s 内探活切回
+ *  - 行情：主源东财 → 同一 tick 内先快重试 → 连续 3 次失败切腾讯备源
+ *          → 备源最短停留 60s 后才探活主源，连续 2 次成功才切回；探活失败则退避翻倍（上限 10 分钟），把来回横跳压下去
+ *          （2026-10-14 实测：东财批量接口存在时间窗式风控，好窗口连续成功、坏窗口连续空响应，成功率 20%–60% 之间波动）
  *  - 时段感知 + 无变化自适应降速（替代写死节假日表，自纠错）
  *  - 云端自选：60s 轮询 myfavor；失败三分类（network / auth / api）
  *  - 快照：成功拉取即存，启动时先行恢复（离线也有界面）
@@ -18,13 +20,26 @@ const { backoffDelay } = require('../core/retry');
 const parser = require('../core/code-parser');
 const { INDEX_SECIDS, INDEX_SHORT_NAMES } = require('../shared/constants');
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const QUOTE_ATTEMPTS = 3;               // 单 tick 内尝试次数（主源风控是时间窗式，隔几百毫秒再试常能落到好窗口）
+const RETRY_GAPS_MS = [300, 900];       // 重试之间的间隔
+const FAIL_THRESHOLD = 3;               // 连续失败多少个 tick 才切备源
+const PROBATION_MS = 5 * 60 * 1000;     // 从备源切回主源后的观察期
+const PROBATION_FAILS = 1;              // 观察期内再失败这么多个 tick 就退回备源（不干等 3 次）
+const RECOVER_MIN_MS = 60 * 1000;       // 切到备源后的最短停留，这期间不探活主源
+const RECOVER_MAX_MS = 10 * 60 * 1000;  // 探活退避上限
+const RECOVER_CONFIRM = 2;              // 切回主源所需的连续探活成功次数
+const RECOVER_GAP_MS = 10 * 1000;       // 连续探活之间的间隔
+
 class Orchestrator extends EventEmitter {
-  constructor({ settings, log, makeFetcher, snapshotFile }) {
+  constructor({ settings, log, makeFetcher, snapshotFile, sleepFn }) {
     super();
     this.settings = settings;
     this.log = log || { info() {}, warn() {}, error() {} };
     this.makeFetcher = makeFetcher || (() => null);
     this.snapshotFile = snapshotFile;
+    this.sleep = sleepFn || sleep;   // 可注入（单测把重试/探活间隔变成立即返回）
 
     this.source = 'eastmoney';
     this.consecFail = 0;
@@ -47,6 +62,10 @@ class Orchestrator extends EventEmitter {
     this.quoteTimer = null;
     this.watchTimer = null;
     this._snapshotSaveTimer = null;
+    this.recoverAt = 0;                     // 下次允许探活主源的时间
+    this.recoverInterval = RECOVER_MIN_MS;  // 探活退避间隔（探活失败一次翻倍）
+    this.recovering = false;                // 探活进行中（避免并发探活）
+    this.probationUntil = 0;                // 切回主源后的观察期截止时间
   }
 
   /* ---------------- 生命周期 ---------------- */
@@ -66,6 +85,30 @@ class Orchestrator extends EventEmitter {
   force() {
     this.scheduleQuote(0);
     this.scheduleWatch(0);
+  }
+
+  /* ---------------- 按分组记忆排序 ---------------- */
+
+  /** 分组排序记忆键：'first'/空 → 实际第一个云分组（无云分组时 cloud→all、manual→default） */
+  sortKey(activeGroup) {
+    const s = this.settings.get();
+    let a = activeGroup != null ? String(activeGroup) : s.source.activeGroup;
+    if (!a || a === 'first') {
+      a = (this.groups && this.groups.length)
+        ? String(this.groups[0].gid)
+        : (s.source.mode === 'cloud' ? 'all' : 'default');
+    }
+    return a;
+  }
+
+  /** 改排序时记到当前分组名下：各分组互不串扰 */
+  rememberSort(mode) {
+    return { ...(this.settings.get().source.groupSorts || {}), [this.sortKey()]: String(mode) };
+  }
+
+  /** 切到某分组时恢复它自己上次的排序（没用过 = 默认原序） */
+  sortForGroup(gid) {
+    return (this.settings.get().source.groupSorts || {})[String(gid)] || 'default';
   }
 
   /* ---------------- 条目解析 ---------------- */
@@ -134,20 +177,22 @@ class Orchestrator extends EventEmitter {
     const entries = this.currentEntries();
     const markets = new Set(entries.map((e) => e.market));
     this.phase = session.marketPhase(new Date(), markets);
-    const secids = [...new Set([...entries.map((e) => e.secid), ...INDEX_SECIDS])];
+    // 股价提醒涉及的股票可能不在当前分组：并入拉取，否则永远查不到价
+    const ruleEntries = this.priceRuleEntries();
+    const secids = [...new Set([...entries.map((e) => e.secid), ...ruleEntries.map((e) => e.secid), ...INDEX_SECIDS])];
 
     const fetcher = this.source === 'eastmoney' ? emQuote.fetchQuotes : txQuote.fetchQuotes;
-    let map;
-    try {
-      map = await fetcher(secids);
-      if (secids.length && !map.size) throw new Error('empty response');
-    } catch (e) {
+    const map = await this.fetchWithRetry(fetcher, secids);
+    if (!map) {
       this.consecFail += 1;
       this.retryCount += 1;
-      if (this.consecFail >= 3 && this.source === 'eastmoney') {
+      // 刚从备源切回的观察期内，再失败一次就退回备源（不再干等 3 次，也不反复给用户看异常）
+      const threshold = Date.now() < this.probationUntil ? PROBATION_FAILS : FAIL_THRESHOLD;
+      if (this.consecFail >= threshold && this.source === 'eastmoney') {
         this.source = 'tencent';
         this.consecFail = 0;
-        this.log.warn('主源连续失败，切换腾讯备源');
+        this.recoverAt = Date.now() + this.recoverInterval;
+        this.log.warn('主源连续失败，切换腾讯备源（' + Math.round(this.recoverInterval / 1000) + 's 后探活）');
         this.scheduleQuote(1500);
       } else {
         this.scheduleQuote(backoffDelay(this.retryCount));
@@ -175,22 +220,76 @@ class Orchestrator extends EventEmitter {
     this.emitState(entries, map);
     this.saveSnapshot(entries, map);
     this.checkAlerts(this._lastGood ? this._lastGood.rows : []);
+    this.checkPriceRules(map);
     this.maybeSummary(this._lastGood ? this._lastGood.rows : []);
 
     const interval = session.suggestedInterval(this.phase, s.behavior.refreshInterval, this.adaptiveSlow);
     this.scheduleQuote(interval);
 
-    // 备源期间探活主源（用上证一只，代价极小）
+    // 主源已平稳走过观察期 → 探活退避复位
+    if (this.source === 'eastmoney' && this.probationUntil && Date.now() > this.probationUntil) {
+      this.probationUntil = 0;
+      if (this.recoverInterval !== RECOVER_MIN_MS) {
+        this.recoverInterval = RECOVER_MIN_MS;
+        this.log.info('主源已稳定，探活退避复位为 ' + Math.round(RECOVER_MIN_MS / 1000) + 's');
+      }
+    }
+    // 备源期间按退避间隔探活主源（一有好窗口就切回、下轮又失败 → 反复横跳，所以必须滞回）
     if (this.source === 'tencent') {
-      emQuote.fetchQuotes(INDEX_SECIDS.slice(0, 1))
-        .then((m) => {
-          if (m.size && this.source === 'tencent') {
-            this.source = 'eastmoney';
-            this.log.info('主源恢复，切回东财');
-            this.emitState(entries, map);
-          }
-        })
-        .catch(() => { /* 仍不可用 */ });
+      this.recoverMain(secids).catch((e) => this.log.warn('探活异常 ' + (e && e.message)));
+    }
+  }
+
+  /**
+   * 同一 tick 内快速重试：东财批量接口是时间窗式风控（好窗口连续成功、坏窗口连续空响应），
+   * 隔几百毫秒再试往往就落到好窗口，于是不必计入失败也不必切备源。
+   * @returns {Promise<Map|null>} 全部尝试都失败时返回 null
+   */
+  async fetchWithRetry(fetcher, secids) {
+    for (let i = 0; i < QUOTE_ATTEMPTS; i++) {
+      try {
+        const map = await fetcher(secids);
+        if (!secids.length || map.size) return map;
+        throw new Error('empty response');
+      } catch (e) {
+        if (i === QUOTE_ATTEMPTS - 1) return null;
+        await this.sleep(RETRY_GAPS_MS[Math.min(i, RETRY_GAPS_MS.length - 1)]);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 备源期间探活主源：跑真实的全量请求（等于预演一轮行情），连续 RECOVER_CONFIRM 次成功才切回。
+   * 未通过则退避翻倍（60s → 120s → … → 10 分钟），让"切回—失败"的横跳越来越稀疏。
+   */
+  async recoverMain(secids) {
+    if (this.recovering || this.source !== 'tencent') return;
+    if (Date.now() < this.recoverAt) return;
+    this.recovering = true;
+    try {
+      let ok = 0;
+      for (let i = 0; i < RECOVER_CONFIRM; i++) {
+        if (i) await this.sleep(RECOVER_GAP_MS);
+        if (this.source !== 'tencent') return; // 期间已切回，放弃本轮
+        const map = await this.fetchWithRetry(emQuote.fetchQuotes, secids);
+        if (!map) break;
+        ok += 1;
+      }
+      if (ok >= RECOVER_CONFIRM) {
+        this.source = 'eastmoney';
+        this.probationUntil = Date.now() + PROBATION_MS;
+        this.consecFail = 0;
+        this.retryCount = 0;
+        this.log.info('主源连续 ' + ok + ' 次探活成功，切回东财（观察期 ' + Math.round(PROBATION_MS / 60000) + ' 分钟）');
+        this.scheduleQuote(0);
+        return;
+      }
+      this.recoverInterval = Math.min(this.recoverInterval * 2, RECOVER_MAX_MS);
+      this.recoverAt = Date.now() + this.recoverInterval;
+      this.log.warn('主源探活未通过（' + ok + '/' + RECOVER_CONFIRM + '），' + Math.round(this.recoverInterval / 1000) + 's 后再试');
+    } finally {
+      this.recovering = false;
     }
   }
 
@@ -294,6 +393,58 @@ class Orchestrator extends EventEmitter {
     }
   }
 
+  /** 股价提醒涉及的自选（可能不在当前分组）：换算 secid 供行情拉取并入 */
+  priceRuleEntries() {
+    const rules = (this.settings.get().alerts || {}).priceRules;
+    if (!Array.isArray(rules)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const r of rules) {
+      if (!r || !r.m || !r.c) continue;
+      const key = r.m + r.c;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ market: r.m, code: String(r.c), secid: r.m === 'US' ? '105.' + r.c : parser.MARKET_SECID[r.m] + '.' + r.c });
+    }
+    return out;
+  }
+
+  /** 个股股价提醒：持续有效（直到用户删除）。突破到价 → emit('pricealert') 一次；
+   *  回到条件外自动重新布防（hit 复位），再次突破再提醒——不轰炸也不漏。
+   *  仅盘中检查；直接查全量行情 map：提醒股不在当前分组也能命中（拉取时已并入）。 */
+  checkPriceRules(map) {
+    const rules = (this.settings.get().alerts || {}).priceRules;
+    if (!Array.isArray(rules) || !rules.length || !(map instanceof Map)) return;
+    if (this.phase !== 'open' && this.phase !== 'auction') return; // 非盘中不用旧数据误报
+    const secOf = new Map(this.priceRuleEntries().map((e) => [e.market + e.code, e.secid]));
+    const hit = [];
+    let changed = false;
+    for (const rule of rules) {
+      const secid = secOf.get(rule.m + rule.c);
+      const q = secid ? map.get(secid) : null;
+      const cond = !!(q && !q.suspended && q.price != null && Number.isFinite(q.price) &&
+        (rule.op === 'lte' ? q.price <= rule.price : q.price >= rule.price));
+      if (cond && !rule.hit) {
+        rule.hit = true;      // 提醒一次后挂起，防每 5 秒轰炸
+        changed = true;
+        hit.push({ rule, q });
+      } else if (!cond && rule.hit) {
+        rule.hit = false;     // 回到条件外：重新布防
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    this.settings.set({ alerts: { priceRules: rules } }); // 规则保留，只更新布防状态
+    this.emit('settings-changed');
+    for (const { rule, q } of hit) {
+      this.emit('pricealert', {
+        name: (q.name || rule.c).replace(/\s+/g, ''), code: rule.c, market: rule.m,
+        price: q.price, op: rule.op, target: rule.price,
+      });
+      this.log.info(`股价提醒命中: ${q.name || rule.c} ${q.price} ${rule.op === 'gte' ? '≥' : '≤'} ${rule.price}`);
+    }
+  }
+
   /** 15:05–15:59 收盘战报，每日一次；周末不发。 */
   maybeSummary(rows) {
     const a = this.settings.get().alerts;
@@ -362,7 +513,8 @@ class Orchestrator extends EventEmitter {
   statusCode() {
     const s = this.settings.get();
     if (s.source.mode === 'cloud' && !this.loggedIn) return 'logged-out';
-    if (this.consecFail > 0 || this.retryCount > 0) return this.source === 'tencent' ? 'degraded' : 'net-error';
+    if (this.consecFail > 0) return 'net-error';    // 当前源在失败：数据在变旧
+    if (this.source === 'tencent') return 'backup';  // 备源供数正常：不是异常，只是走了备源
     return 'ok';
   }
 
@@ -382,7 +534,7 @@ class Orchestrator extends EventEmitter {
         phase: this.phase,
         phaseLabel: session.phaseLabel(this.phase),
         lastUpdate: this.lastUpdate,
-        retryCount: this.retryCount,
+        retryCount: this.consecFail,   // 展示用：当前源连续失败次数（不是累计重试次数）
         adaptive: this.adaptiveSlow,
       },
       form: s.window.form,

@@ -1,0 +1,57 @@
+/* 股价提醒屏上弹窗（独立小窗，不随主窗主题） */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: transparent;
+  overflow: hidden;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+:root { --accent: #E5C24F; }
+
+#toastcard {
+  height: 100%;
+  background: rgba(24, 26, 31, .94);
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  color: #E9EBEE;
+  padding: 9px 12px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: hidden;
+}
+.t-head { display: flex; align-items: center; gap: 8px; }
+#t-title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: #9BA1A8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#t-close {
+  border: 0;
+  background: transparent;
+  color: #676D75;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 3px;
+  font-family: inherit;
+}
+#t-close:hover { color: #fff; }
+#t-body {
+  font-size: 13.5px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.t-hint { font-size: 10px; color: #676D75; }

@@ -69,7 +69,11 @@ function setupIpc(ctx) {
   });
 
   ipcMain.handle('app:settings:set', (_e, payload) => {
-    const patch = payload || {};
+    let patch = payload || {};
+    // 排序按分组记忆：改排序时记到当前分组名下，切分组互不串扰
+    if (patch.source && patch.source.sortMode != null && orch.rememberSort) {
+      patch = { ...patch, source: { ...patch.source, groupSorts: orch.rememberSort(patch.source.sortMode) } };
+    }
     const next = settings.set(patch);
     broadcast('evt:settings', next);
     if (patch.shortcuts) ctx.reregisterShortcuts();
@@ -142,8 +146,61 @@ function setupIpc(ctx) {
 
   ipcMain.handle('app:group:select', (_e, p) => {
     const gid = p && p.gid != null ? String(p.gid) : 'all';
-    settings.set({ source: { activeGroup: gid } });
+    // 切分组时恢复该分组自己上次的排序（没用过 = 默认原序）
+    settings.set({ source: { activeGroup: gid, sortMode: orch.sortForGroup(gid) } });
+    broadcast('evt:settings', settings.get()); // 排序随分组变了，设置窗/眼睛面板要跟上
     orch.scheduleQuote(0);
+    return { ok: true };
+  });
+
+  /* ---------- 个股股价提醒 ---------- */
+
+  ipcMain.handle('app:pricealert:add', (_e, p) => {
+    const m = String((p && p.market) || '');
+    const c = String((p && p.code) || '').toUpperCase();
+    const op = p && p.op === 'lte' ? 'lte' : 'gte';
+    const price = Number(p && p.price);
+    if (!VALID_MARKETS.includes(m) || !c || !Number.isFinite(price) || price <= 0) {
+      return { ok: false, error: 'invalid' };
+    }
+    const rules = (settings.get().alerts && settings.get().alerts.priceRules) || [];
+    if (rules.some((r) => r.m === m && r.c === c && r.op === op && r.price === price)) {
+      return { ok: true, dup: true };
+    }
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    settings.set({ alerts: { priceRules: [...rules, { id, m, c, op, price, ts: Date.now() }] } });
+    broadcast('evt:settings', settings.get());
+    return { ok: true };
+  });
+
+  ipcMain.handle('app:pricealert:remove', (_e, p) => {
+    const id = p && p.id;
+    const cur = settings.get().alerts || {};
+    const rules = (Array.isArray(cur.priceRules) ? cur.priceRules : []).filter((r) => r.id !== id);
+    settings.set({ alerts: { priceRules: rules } });
+    broadcast('evt:settings', settings.get());
+    return { ok: true };
+  });
+
+  // 列表滚动运行态镜像（渲染层为源头；右键菜单标签用）
+  ipcMain.handle('app:autoscroll:set', (_e, p) => {
+    if (ctx.setAutoscrollOn) ctx.setAutoscrollOn(!!(p && p.on));
+    return { ok: true };
+  });
+
+  // 股价提醒屏上弹窗：拖动/点击命令 + 位置预览（提醒面板里「预览 / 调整弹窗位置」）
+  ipcMain.handle('app:toast:cmd', (_e, p) => {
+    if (ctx.toast) ctx.toast.handleCommand(p || {});
+    return { ok: true };
+  });
+  ipcMain.handle('app:pricetoast:preview', () => {
+    if (ctx.toast) {
+      ctx.toast.showAlertToast({
+        title: '股价提醒 · 预览',
+        body: '拖动到合适位置，松手即记忆 · 10 秒后自动消失',
+        accent: '#E5C24F',
+      });
+    }
     return { ok: true };
   });
 
@@ -299,6 +356,15 @@ function setupIpc(ctx) {
       },
       { type: 'separator' },
       { label: '在东方财富打开', click: () => ctx.openExternalUrl(quoteUrl(row)) },
+      {
+        label: '股价提醒…',
+        click: () => {
+          const w = ctx.getMainWin();
+          if (w && !w.isDestroyed()) w.webContents.send('evt:pricealert', {
+            market: row.market, code: row.code, name: row.name, price: row.price,
+          });
+        },
+      },
     ];
     if (manual) {
       tpl.push(

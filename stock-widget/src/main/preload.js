@@ -10,10 +10,12 @@ const INVOKE = [
   'app:positions:import', 'app:positions:remove',
   'app:list:add', 'app:list:remove', 'app:list:reorder',
   'app:list:star', 'app:group:select', 'app:login:open', 'app:login:logout',
+  'app:pricealert:add', 'app:pricealert:remove',
+  'app:autoscroll:set', 'app:toast:cmd', 'app:pricetoast:preview',
   'app:win:form', 'app:win:height', 'app:win:width', 'app:win:expand', 'app:popup:watch', 'app:settings:hide', 'app:resize:start', 'app:resize:end', 'app:ctx:menu', 'app:bg:ctx', 'app:open-external',
   'app:hide', 'app:refresh', 'app:quit', 'app:meeting',
 ];
-const EVENTS = ['evt:state', 'evt:settings', 'evt:login', 'evt:notice', 'evt:penetrate', 'evt:popup:close', 'evt:win:settings-vis', 'evt:meeting', 'evt:focus-search'];
+const EVENTS = ['evt:state', 'evt:settings', 'evt:login', 'evt:notice', 'evt:penetrate', 'evt:popup:close', 'evt:win:settings-vis', 'evt:meeting', 'evt:focus-search', 'evt:pricealert', 'evt:autoscroll', 'evt:toast:show'];
 
 contextBridge.exposeInMainWorld('widget', {
   invoke(channel, payload) {

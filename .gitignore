@@ -1,5 +1,6 @@
 # 工作区工具缓存
 .zwork/
+.scratch/
 
 # macOS
 .DS_Store

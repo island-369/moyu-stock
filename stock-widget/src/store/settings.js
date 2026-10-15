@@ -37,6 +37,8 @@ const DEFAULTS = {
     summary: true,        // 15:05 收盘战报
     style: 'banner',      // banner=系统横幅 | menubar=菜单栏 ▲▼ 信号（最低调）| silent=静默只记黄条
     lowKey: false,        // 低调通知：标题/正文不出现股票名与价格（默认通知本身就是暴露源）
+    priceRules: [],       // 个股股价提醒 [{id,m,c,op:'gte'|'lte',price,hit,ts}]：盘中到价屏上弹窗并重新布防
+    toastPos: null,       // 股价提醒弹窗位置（拖动后记忆）{x,y}
   },
   source: {
     mode: 'manual',       // manual | cloud
@@ -45,6 +47,7 @@ const DEFAULTS = {
     activeGroup: 'first',     // first=第一个分组（像东财默认落在自选股）| all=合并视图 | gid
     activeGroupMigrated: false, // 一次性迁移标记（默认 false，迁移后写 true）
     sortMode: 'default',  // default=自选顺序 | pct=按涨跌幅（摸鱼一眼看异动）
+    groupSorts: {},       // 按分组记忆排序：gid -> sortMode，切分组恢复该组上次的排序
     localOrder: {},       // 云端模式本地顺序覆盖 'SH600519' -> idx
     filterStarred: false, // 仅看置顶（手动模式；自选几百只时快速聚焦）
     positions: [],        // 本地持仓 [{m,c,s,cost,qty}] —— 与东财账户无关，成本本地记录

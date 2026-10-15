@@ -80,6 +80,7 @@ function measureSoon() {
       const h = Math.max(30, Math.round(tb.offsetHeight + 7));
       widget.invoke('app:win:height', { height: h }).catch(() => {});
       syncPopExpand();
+      autoScroll.sync(); // 迷你条下列表隐藏，视为无需轮播
       return;
     }
     const inner = $('#listinner');
@@ -96,16 +97,141 @@ function measureSoon() {
     }
     // 滚动条占位：写入 --sbw，让表头/状态条扣掉同样宽度，与数据列严格对齐
     const sbw = Math.max(0, list.offsetWidth - list.clientWidth);
-    app.style.setProperty('--sbw', sbw + 'px');
+    // +4 = #list 右缘留白（margin-right，避开缩放条），表头/状态条随之内收对齐
+    app.style.setProperty('--sbw', (sbw + 4) + 'px');
     syncPopExpand();
+    autoScroll.sync();
   }, 120);
 }
+
+/* ---------------- 列表滚动（手动触发） ---------------- */
+/* 默认不滚；右键空白处「启动滚动」或眼睛面板启动后，列表缓慢下滚、到底停 2 秒回顶循环；
+   鼠标悬停立即暂停、移开继续。速度按行高自适应（约 1.5 秒一行），各字号档观感一致。 */
+const autoScroll = (() => {
+  const list = $('#list');
+  const POP_IDS = ['#vispop', '#grouppop', '#addpop', '#alertpop', '#newspanel', '#onboard'];
+  const ROW_SECONDS = 1;    // 每滚一行的秒数
+  const MANUAL_HOLD = 4000; // 手动滚动（滚轮/键盘）后暂停多久再续
+  const DWELL_MS = 2000;    // 滚到底部的停留时长
+
+  let raf = 0;
+  let lastT = 0;
+  let dwellAt = 0;      // 到达底部的时刻（rAF 时间戳）
+  let hover = false;    // 鼠标悬停在列表上
+  let manualUntil = 0;  // 手动滚动暂停截止时刻
+  let sparkOpen = false;
+  let running = false; // 运行态：仅用户显式启动；不跨重启记忆
+  let need = false;
+  // 子像素累计：Chromium 会把 scrollTop 赋值向下取整，每帧 0.x px 的增量直接赋值永远被
+  // 取整成 0（滚动永远动不了），所以虚拟位置在 JS 里小数累加、每帧只写整数部分
+  let pos = 0;
+  let written = -1;     // 上次由本循环写入的 scrollTop，用于识别外部滚动（拖滑块/键盘/滚轮）
+
+  const rowH = () => {
+    const row = list.querySelector('.row');
+    return (row && row.offsetHeight) || 36;
+  };
+  const paused = () => {
+    if (hover || sparkOpen || dragging) return true;
+    if (Date.now() < manualUntil) return true;
+    if (settings && settings.window.form === 'mini') return true;
+    for (const id of POP_IDS) {
+      const el = $(id);
+      if (el && !el.hidden) return true;
+    }
+    return false;
+  };
+
+  function frame(t) {
+    raf = 0;
+    if (!need) return;
+    if (!paused()) {
+      // 隐藏窗口会让 rAF 停摆，dt 钳制避免恢复瞬跳
+      const dt = Math.min(0.1, (t - lastT) / 1000 || 0);
+      const max = list.scrollHeight - list.clientHeight;
+      if (max > 1) {
+        if (list.scrollTop >= max - 0.5) {
+          if (!dwellAt) dwellAt = t;
+          if (t - dwellAt >= DWELL_MS) { list.scrollTop = 0; pos = 0; written = 0; dwellAt = 0; }
+        } else {
+          dwellAt = 0;
+          // 位置被外部改变（用户拖滑块/翻页/scrollIntoView）→ 以实际位置为准接着滚
+          if (list.scrollTop !== written) pos = list.scrollTop;
+          pos = Math.min(max, pos + (rowH() / ROW_SECONDS) * dt);
+          const target = Math.floor(pos);
+          if (target > list.scrollTop) list.scrollTop = Math.min(max, target);
+          written = list.scrollTop;
+        }
+      }
+    }
+    lastT = t;
+    raf = requestAnimationFrame(frame);
+  }
+
+  /** 重新评估是否需要滚动（启动/停止、渲染后、窗口尺寸变化时调用） */
+  function sync() {
+    need = !!(running && list.scrollHeight > list.clientHeight + 2);
+    if (need && !raf) { lastT = performance.now(); raf = requestAnimationFrame(frame); }
+    else if (!need && raf) { cancelAnimationFrame(raf); raf = 0; }
+  }
+
+  list.addEventListener('mouseenter', () => { hover = true; });
+  list.addEventListener('mouseleave', () => { hover = false; });
+  list.addEventListener('wheel', () => { manualUntil = Date.now() + MANUAL_HOLD; }, { passive: true });
+  // 外部滚动（拖滑块/键盘翻行/scrollIntoView，这些不触发 wheel）→ 暂停几秒再续；
+  // 本循环自己的写入不触发（written 刚同步为最新值）
+  list.addEventListener('scroll', () => {
+    if (written >= 0 && list.scrollTop !== written) {
+      pos = list.scrollTop;
+      manualUntil = Date.now() + MANUAL_HOLD;
+    }
+  });
+  window.addEventListener('resize', () => setTimeout(sync, 150));
+
+  const mirror = () => {
+    try { widget.invoke('app:autoscroll:set', { on: running }).catch(() => {}); } catch (e) { /* widget 未就绪 */ }
+  };
+
+  function setRunning(v) {
+    running = !!v;
+    if (running) {
+      // 启动瞬间清掉悬停/手动滚动暂停：右键菜单就开在列表上，光标多半还悬在原地，
+      // 不清的话「启动了却不动」，要等鼠标离再进列表才恢复
+      hover = false;
+      manualUntil = 0;
+      pos = list.scrollTop; // 从当前位置接着滚
+      written = pos;
+    }
+    sync();
+    mirror();
+    // 启动了但一屏装得下：提示而非静默无反应
+    if (running && !need && settings && settings.window.form !== 'mini') {
+      toast('当前列表一屏装得下，无需滚动');
+    }
+  }
+
+  return {
+    sync,
+    isRunning: () => running,
+    toggle: () => setRunning(!running),
+    setRunning,
+    nudge: () => { manualUntil = Date.now() + MANUAL_HOLD; },
+    setSparkOpen: (v) => { sparkOpen = !!v; },
+    /** 排查用：app:debug 通道可见的暂停原因快照 */
+    debug: () => ({
+      running, need, hover, sparkOpen, dragging: !!dragging,
+      manualPause: Date.now() < manualUntil, mini: !!(settings && settings.window.form === 'mini'),
+      pops: POP_IDS.filter((id) => { const el = $(id); return el && !el.hidden; }),
+      scrollTop: list.scrollTop, max: list.scrollHeight - list.clientHeight,
+    }),
+  };
+})();
 
 /** 弹层撑高：弹层底部超出窗口时临时把窗口拉高到能完整显示（关闭后自动还原） */
 function syncPopExpand() {
   if (!settings) return;
   let need = 0;
-  for (const id of ['#vispop', '#grouppop', '#addpop']) {
+  for (const id of ['#vispop', '#grouppop', '#addpop', '#alertpop']) {
     const el = $(id);
     if (!el || el.hidden) continue;
     if (getComputedStyle(el).display === 'none') continue;
@@ -122,7 +248,7 @@ function syncPopExpand() {
 /** 收掉所有弹层（点窗口外 / 失焦 / Esc / 隐藏窗口时调用） */
 function closeAllPops() {
   let closed = false;
-  for (const id of ['#addpop', '#vispop', '#grouppop']) {
+  for (const id of ['#addpop', '#vispop', '#grouppop', '#alertpop']) {
     const el = $(id);
     if (el && !el.hidden) { el.hidden = true; closed = true; }
   }
@@ -153,6 +279,9 @@ function syncVis() {
   $('#vprot').textContent = prot ? '已开启' : '开启';
   $('#vmeeting').classList.toggle('on', meetingOn);
   $('#vmeeting').textContent = meetingOn ? '关闭' : '开启';
+  const rolling = autoScroll.isRunning();
+  $('#vscroll').classList.toggle('on', rolling);
+  $('#vscroll').textContent = rolling ? '停止' : '启动';
 }
 
 /* ---------------- 设置应用 ---------------- */
@@ -177,6 +306,8 @@ function applySettings(s) {
   app.classList.toggle('autow', !!s.appearance.autoWidth);
   $('#btn-news').hidden = !s.behavior.newsEnabled;
   if (!first && state) render(state);
+  // 股价提醒弹层开着时同步规则列表（如规则被命中移除）
+  if (!$('#alertpop').hidden) renderApList();
   // 从迷你条点眼睛回来：直接展开面板（一步到位）
   if (pendingVis && s.window.form === 'full') {
     pendingVis = false;
@@ -336,15 +467,20 @@ function rebuildGroupPop(st) {
     };
     list.append(row);
   };
+  // 顺序：全部（或自选列表）→ 持仓 → 各云分组（本地持仓跟着「全部」走，常看的分组不用翻到底部）
+  const mkPositions = () => {
+    if (posCount) mk('持仓', posCount, '__positions__', st.activeGroup === '__positions__');
+  };
   if (hasGroups) {
     mk('全部（合并视图）', null, 'all', st.activeGroup === 'all');
+    mkPositions();
     for (const g of st.groups) {
       mk(g.gname, g.count, g.gid, String(st.activeGroup) === String(g.gid));
     }
   } else {
     mk('自选列表', st.rows.length, 'default', st.activeGroup !== '__positions__');
+    mkPositions();
   }
-  if (posCount) mk('持仓', posCount, '__positions__', st.activeGroup === '__positions__');
 }
 
 function renderIndex(st) {
@@ -555,11 +691,13 @@ async function toggleSpark(el) {
   if (!spark.hidden) {
     spark.hidden = true;
     el.classList.remove('open');
+    autoScroll.setSparkOpen(false);
     measureSoon();
     return;
   }
   spark.hidden = false;
   el.classList.add('open');
+  autoScroll.setSparkOpen(true);
   const r = state && state.rows.find((x) => x.market + x.code === key);
   if (!r || !r.secid) { spark.textContent = ''; measureSoon(); return; }
 
@@ -575,15 +713,23 @@ async function toggleSpark(el) {
       spark.textContent = '';
       const m = document.createElement('div');
       m.className = 'meta';
-      m.textContent = '分时数据获取失败';
+      m.textContent = '分时获取失败 · 双源均无响应';
       spark.append(m);
+      revealRow(el);
+      measureSoon();
       return;
     }
     data = { ts: Date.now(), points: res.points, preClose: res.preClose };
     sparkCache.set(key, data);
   }
   drawSpark(spark, data, r);
+  revealRow(el);
   measureSoon();
+}
+
+/** 展开分时后把整行（含图表）滚进可视区：窗口高度固定时，点靠下的行不会"点了没反应" */
+function revealRow(el) {
+  try { el.scrollIntoView({ block: 'nearest' }); } catch (e) { /* 忽略 */ }
 }
 
 function drawSpark(spark, data, r) {
@@ -654,15 +800,19 @@ function drawSpark(spark, data, r) {
 function renderStatus(st) {
   const s = st.status || {};
   const dot = $('#dot');
+  // 只有"数据真的变旧"（超过 20s 没有新数据）才算异常；东财在坏窗口里失败一两次时数据还很新，
+  // 不该弹"网络异常"（这正是之前反复刷屏的根源）
+  const stale = !s.lastUpdate || Date.now() - s.lastUpdate > 20000;
   const dotCls = {
-    ok: 'dot-ok', 'net-error': 'dot-err', degraded: 'dot-warn',
+    ok: 'dot-ok', 'net-error': stale ? 'dot-err' : 'dot-warn', degraded: 'dot-warn', backup: 'dot-warn',
     'logged-out': 'dot-idle', 'api-changed': 'dot-err',
   }[s.code] || 'dot-ok';
   dot.className = 'dot ' + dotCls;
 
   let label;
   if (s.code === 'logged-out') label = '云端未登录';
-  else if (s.code === 'net-error') label = `网络异常 · 第 ${s.retryCount || 1} 次重试`;
+  else if (s.code === 'net-error') label = stale ? `网络异常 · 第 ${s.retryCount || 1} 次重试` : '重试中…';
+  else if (s.code === 'backup') label = '腾讯备源 · 数据正常'; // 备源在正常供数，不是异常
   else if (s.code === 'degraded') label = '腾讯备源 · 重试中';
   else if (s.code === 'api-changed') label = '接口异常';
   else if (st.mode === 'cloud') label = st.loggedIn ? '云端 · 已同步 ' + hhmmss(s.lastUpdate) : '云端 · 未登录';
@@ -672,7 +822,7 @@ function renderStatus(st) {
     `${s.phaseLabel || ''} · ${s.source === 'eastmoney' ? '东财' : '腾讯'}${s.adaptive ? ' · 静默' : ''}`;
 
   const banner = $('#banner');
-  const showBanner = penOn || s.code === 'net-error' || s.code === 'logged-out';
+  const showBanner = penOn || (s.code === 'net-error' && stale) || s.code === 'logged-out';
   banner.hidden = !showBanner;
   if (showBanner) {
     if (penOn) {
@@ -776,6 +926,48 @@ function attachSearch(inputEl, resultsEl, onDone) {
 
   renderResults();
   return { refreshCount: () => {} };
+}
+
+/* ---------------- 股价提醒弹层 ---------------- */
+
+let apCtx = null; // 正在设置提醒的股票 {market, code, name, price}
+
+function openPriceAlert(info) {
+  apCtx = {
+    market: String((info && info.market) || ''),
+    code: String((info && info.code) || ''),
+    name: (info && info.name) || (info && info.code) || '—',
+    price: info && Number.isFinite(info.price) ? info.price : null,
+  };
+  $('#ap-name').textContent = apCtx.name;
+  $('#ap-price').textContent = apCtx.price != null ? '现价 ' + apCtx.price.toFixed(2) : '现价 —';
+  $('#ap-gte').value = '';
+  $('#ap-lte').value = '';
+  renderApList();
+  $('#alertpop').hidden = false;
+  syncPopExpand();
+  setTimeout(() => { $('#ap-gte').focus(); }, 30);
+}
+
+function renderApList() {
+  const box = $('#ap-list');
+  box.textContent = '';
+  if (!apCtx || !settings) return;
+  const rules = ((settings.alerts || {}).priceRules || [])
+    .filter((r) => r.m === apCtx.market && r.c === apCtx.code);
+  for (const r of rules) {
+    const item = document.createElement('div');
+    item.className = 'apitem';
+    const txt = document.createElement('span');
+    txt.textContent = (r.op === 'lte' ? '跌到 ≤ ' : '涨到 ≥ ') + r.price.toFixed(2) + (r.hit ? '（已触发）' : '');
+    const del = document.createElement('button');
+    del.className = 'del';
+    del.textContent = '×';
+    del.title = '删除该提醒';
+    del.dataset.del = r.id;
+    item.append(txt, del);
+    box.append(item);
+  }
 }
 
 /* ---------------- 引导 ---------------- */
@@ -914,6 +1106,8 @@ async function boot() {
     syncVis();
   });
   widget.on('evt:focus-search', () => openAddPop());
+  widget.on('evt:pricealert', openPriceAlert);
+  widget.on('evt:autoscroll', (p) => { autoScroll.setRunning(!!(p && p.on)); syncVis(); });
 
   // 图标
   $('#btn-min').innerHTML = SVG.minus;
@@ -987,6 +1181,54 @@ async function boot() {
     if (!btn) return;
     widget.invoke('app:settings:set', { source: { sortMode: btn.dataset.v } }).catch(() => {});
   };
+  $('#vscroll').onclick = () => {
+    autoScroll.toggle();
+    // 启动后收起面板：面板开着时列表是暂停的，收起立刻能看到滚起来
+    if (autoScroll.isRunning()) { $('#vispop').hidden = true; syncPopExpand(); }
+    syncVis();
+  };
+
+  // 股价提醒弹层（列表右键 → 股价提醒…）：涨到/跌到可同时各设一个，持续有效
+  for (const id of ['#ap-gte', '#ap-lte']) {
+    $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#ap-add').click(); });
+  }
+  $('#ap-add').onclick = async () => {
+    if (!apCtx) return;
+    const adds = [];
+    for (const [id, op] of [['#ap-gte', 'gte'], ['#ap-lte', 'lte']]) {
+      const raw = $(id).value.trim();
+      if (raw === '') continue;
+      const v = Number(raw);
+      if (!Number.isFinite(v) || v <= 0) {
+        toast(op === 'gte' ? '「涨到 ≥」请输入有效价格' : '「跌到 ≤」请输入有效价格');
+        return;
+      }
+      adds.push({ op, price: v });
+    }
+    if (!adds.length) { toast('至少填一个目标价格'); return; }
+    if (adds.length === 2 && adds[0].price <= adds[1].price) { toast('「涨到 ≥」应高于「跌到 ≤」'); return; }
+    let okN = 0, dupN = 0;
+    for (const a of adds) {
+      const res = await widget.invoke('app:pricealert:add', {
+        market: apCtx.market, code: apCtx.code, op: a.op, price: a.price,
+      }).catch(() => null);
+      if (res && res.ok && !res.dup) okN += 1;
+      else if (res && res.dup) dupN += 1;
+    }
+    if (okN) {
+      const label = adds.map((a) => (a.op === 'lte' ? '跌到 ≤ ' : '涨到 ≥ ') + a.price.toFixed(2)).join(' · ');
+      toast(`已设置 ${apCtx.name} ${label} · 持续有效，到价弹通知`);
+      $('#alertpop').hidden = true;
+      syncPopExpand();
+    } else if (dupN === adds.length) toast('该提醒已存在');
+    else toast('设置失败，请重试');
+  };
+  $('#ap-list').onclick = async (e) => {
+    const del = e.target.closest('[data-del]');
+    if (!del) return;
+    await widget.invoke('app:pricealert:remove', { id: del.dataset.del }).catch(() => {});
+  };
+  $('#ap-preview').onclick = () => widget.invoke('app:pricetoast:preview').catch(() => {});
   $('#vboss').onclick = () => {
     $('#vispop').hidden = true;
     syncPopExpand();
@@ -1046,6 +1288,7 @@ async function boot() {
       kSel = rows[i].dataset.key;
       applyK();
       rows[i].scrollIntoView({ block: 'nearest' });
+      autoScroll.nudge(); // 键盘翻行时暂停轮播几秒，避免抢滚动
     } else if (e.key === 'Enter' && kSel) {
       const el = keyRows().find((x) => x.dataset.key === kSel);
       if (el) toggleSpark(el);
@@ -1067,6 +1310,7 @@ async function boot() {
     if (!$('#addpop').hidden) { $('#addpop').hidden = true; syncPopExpand(); return; }
     if (!$('#vispop').hidden) { $('#vispop').hidden = true; syncPopExpand(); return; }
     if (!$('#grouppop').hidden) { $('#grouppop').hidden = true; syncPopExpand(); return; }
+    if (!$('#alertpop').hidden) { $('#alertpop').hidden = true; syncPopExpand(); return; }
     if (newsOpen) toggleNews();
   });
 
@@ -1085,6 +1329,10 @@ async function boot() {
     const gp = $('#grouppop');
     if (!gp.hidden && !gp.contains(e.target) && !$('#btn-group').contains(e.target)) {
       gp.hidden = true; closed = true;
+    }
+    const ap = $('#alertpop');
+    if (!ap.hidden && !ap.contains(e.target)) {
+      ap.hidden = true; closed = true;
     }
     if (closed) syncPopExpand();
     // 窗口内任意点击也收起设置窗（非激活面板不夺焦点，失焦事件不一定触发）
@@ -1129,3 +1377,5 @@ async function boot() {
 }
 
 boot();
+
+

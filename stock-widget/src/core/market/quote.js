@@ -8,6 +8,8 @@
 const { EM, UA } = require('../../shared/constants');
 
 const TIMEOUT = 6000;
+// 单请求 secid 上限：URL ≈ 6.3KB（385 只自选 = 1 个请求；超过上限才分批）
+const MAX_SECIDS_PER_REQUEST = 700;
 
 function num(v) {
   if (v === '-' || v === undefined || v === null || v === '') return null;
@@ -16,9 +18,22 @@ function num(v) {
 }
 
 /**
- * 批量拉行情。secids 形如 ['1.600519','0.000001',...]，>50 自动分批。
+ * 按单请求上限切分 secid（导出便于单测）。
+ * 实测 pz=1000 + 385 只 secids 能一次返回 385 条，所以正常只会有 1 个请求。
  * @param {string[]} secids
- * @param {{fetchImpl?:function, timeout?:number}} opts
+ * @param {number} max
+ * @returns {string[][]}
+ */
+function planQuoteBatches(secids, max = MAX_SECIDS_PER_REQUEST) {
+  const batches = [];
+  for (let i = 0; i < secids.length; i += max) batches.push(secids.slice(i, i + max));
+  return batches;
+}
+
+/**
+ * 批量拉行情。secids 形如 ['1.600519','0.000001',...]；超上限才分批。
+ * @param {string[]} secids
+ * @param {{fetchImpl?:function, timeout?:number, pageSize?:number}} opts
  * @returns {Promise<Map<string, {secid, code, name, price, prevClose, pct, chg, suspended}>>}
  */
 async function fetchQuotes(secids, opts = {}) {
@@ -26,11 +41,12 @@ async function fetchQuotes(secids, opts = {}) {
   const timeout = opts.timeout || TIMEOUT;
   if (!secids.length) return new Map();
   const out = new Map();
-  const batches = [];
-  for (let i = 0; i < secids.length; i += 50) batches.push(secids.slice(i, i + 50));
+  const batches = planQuoteBatches(secids, opts.pageSize || MAX_SECIDS_PER_REQUEST);
 
   for (const batch of batches) {
-    const url = EM.quoteList + encodeURIComponent(batch.join(','));
+    // constants.js 的 quoteList 里写死了 pz=50：这里按本次实际条数替换。
+    // （该文件含一行公开 token 字面量，整文件写入会被安全策略拦下，所以不在那里改）
+    const url = EM.quoteList.replace(/([?&]pz=)\d+/, '$1' + batch.length) + encodeURIComponent(batch.join(','));
     const res = await doFetch(url, {
       headers: { 'User-Agent': UA, Referer: 'https://quote.eastmoney.com/' },
       signal: AbortSignal.timeout(timeout),
@@ -57,4 +73,4 @@ async function fetchQuotes(secids, opts = {}) {
   return out;
 }
 
-module.exports = { fetchQuotes };
+module.exports = { fetchQuotes, planQuoteBatches, MAX_SECIDS_PER_REQUEST };

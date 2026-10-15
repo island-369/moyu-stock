@@ -14,6 +14,7 @@ const { sessionFetcher, attachRefererFix, openLoginWindow, logout } = require('.
 const { TrayMgr } = require('./tray');
 const { registerAll } = require('./shortcuts');
 const { Orchestrator } = require('./orchestrator');
+const toast = require('./toast');
 const { setupIpc } = require('./ipc');
 
 const SMOKE = process.argv.includes('--smoke');
@@ -458,27 +459,31 @@ function updateTrayTitle() {
   trayMgr.setIndexTitle(st ? st.indexes : [], bossHidden, alertSignal);
 }
 
-/** ⌥⇧←/→ 循环切换分组：全部 → 各云分组 → 持仓（manual：自选 → 持仓） */
+/** ⌥⇧←/→ 循环切换分组：全部 → 持仓 → 各云分组（manual：自选 → 持仓）；顺序与分组下拉一致 */
 function cycleGroup(dir) {
   if (!orch) return;
   const st = orch.currentState();
   if (!st) return;
   const seq = [];
   const hasGroups = st.mode === 'cloud' && st.groups && st.groups.length;
+  const hasPositions = (st.positionsCount || 0) > 0;
   if (hasGroups) {
     seq.push('all');
+    if (hasPositions) seq.push('__positions__');
     for (const g of st.groups) seq.push(String(g.gid));
   } else {
     seq.push('default');
+    if (hasPositions) seq.push('__positions__');
   }
-  if ((st.positionsCount || 0) > 0) seq.push('__positions__');
   let cur = st.activeGroup || 'first';
   if (cur === 'first') cur = hasGroups ? String(st.groups[0].gid) : 'default';
   const i = seq.indexOf(String(cur));
   const next = seq[((i < 0 ? 0 : i) + dir + seq.length) % seq.length];
-  settings.set({ source: { activeGroup: next } });
+  // 切分组时恢复该分组自己上次的排序（没用过 = 默认原序）
+  settings.set({ source: { activeGroup: next, sortMode: orch.sortForGroup(next) } });
+  broadcast('evt:settings', settings.get()); // 排序随分组变了，界面要跟上
   orch.scheduleQuote(0);
-  log.info('快捷键切换分组 → ' + next);
+  log.info('快捷键切换分组 → ' + next + ' · 排序 ' + settings.get().source.sortMode);
 }
 
 /** 开机自启：上班开机即有，省掉"手动开应用"这个暴露动作。冒烟模式绝不触碰登录项。 */
@@ -568,6 +573,8 @@ function nudgeAlpha(delta) {
   broadcast('evt:settings', settings.get());
 }
 
+let autoscrollOn = false; // 列表滚动运行态（渲染层为源头，经 app:autoscroll:set 镜像，供右键菜单显示标签）
+
 /** 空白处右键快捷菜单：浓度/排序/形态/隐身/设置（不依赖找到眼睛按钮） */
 /** 排序模式归一化（兼容旧值 pct → pct-desc） */
 function normSort(m) {
@@ -576,8 +583,20 @@ function normSort(m) {
 }
 
 function setSort(m) {
-  settings.set({ source: { sortMode: m } });
+  const patch = { source: { sortMode: m } };
+  if (orch && orch.rememberSort) patch.source.groupSorts = orch.rememberSort(m); // 记到当前分组名下
+  settings.set(patch);
   broadcast('evt:settings', settings.get());
+}
+
+/** 提醒弹窗色条颜色：跟随红涨绿跌/单色设置 */
+function riseColor() {
+  const s = settings.get().appearance;
+  return s.mono ? '#9BA1A8' : (s.upColor === 'green' ? '#30A46C' : '#E5484D');
+}
+function fallColor() {
+  const s = settings.get().appearance;
+  return s.mono ? '#9BA1A8' : (s.upColor === 'green' ? '#E5484D' : '#30A46C');
 }
 
 function bgContextMenu() {
@@ -623,6 +642,10 @@ function bgContextMenu() {
         { label: '价格 高→低', type: 'radio', checked: normSort(s.source.sortMode) === 'price-desc', click: () => setSort('price-desc') },
         { label: '价格 低→高', type: 'radio', checked: normSort(s.source.sortMode) === 'price-asc', click: () => setSort('price-asc') },
       ],
+    },
+    {
+      label: autoscrollOn ? '停止滚动' : '启动滚动',
+      click: () => broadcast('evt:autoscroll', { on: !autoscrollOn }),
     },
     {
       label: '迷你条', type: 'checkbox', checked: s.window.form === 'mini',
@@ -784,6 +807,7 @@ function main() {
     makeFetcher: () => sessionFetcher(loginSes),
     snapshotFile: path.join(userData, 'snapshot.json'),
   });
+  toast.init({ settings, log, showMainWindow });
   orch.on('state', (st) => {
     broadcast('evt:state', st);
     updateTrayTitle();
@@ -827,6 +851,25 @@ function main() {
       n.show();
     } catch (e) { log.warn('异动提醒失败: ' + e.message); }
   });
+  // 个股股价提醒（列表右键 → 股价提醒）：用户预设的到价通知，持续有效；隐身/会议期间静默累积。
+  // 到价用屏上弹窗（屏幕底部居中、可拖动记忆位置、不夺焦点），不用右上角系统通知。
+  orch.on('pricealert', (a) => {
+    try {
+      const dir = a.op === 'lte' ? '≤' : '≥';
+      const text = `${a.name} 现价 ${a.price.toFixed(2)} · 已${a.op === 'lte' ? '跌' : '涨'}到 ${dir} ${a.target.toFixed(2)}`;
+      setAlertSignal(a.op === 'lte' ? -1 : 1);
+      const winVisible = !!(mainWin && !mainWin.isDestroyed() && mainWin.isVisible());
+      if (winVisible) broadcast('evt:notice', { text: text + ' · 提醒已生效', ms: 6000 });
+      if (alertsPaused()) { pushMissedText(text); return; }
+      toast.showAlertToast({
+        title: `股价提醒 · ${a.name}`,
+        body: `现价 ${a.price.toFixed(2)}，已${a.op === 'lte' ? '跌到' : '涨到'} ${a.target.toFixed(2)}`,
+        accent: a.op === 'lte' ? fallColor() : riseColor(),
+      });
+    } catch (e) { log.warn('股价提醒通知失败: ' + e.message); }
+  });
+  // orchestrator 自己改了设置（如命中后移除规则）→ 同步给两个窗口
+  orch.on('settings-changed', () => broadcast('evt:settings', settings.get()));
   orch.on('summary', (s) => {
     try {
       if (alertsPaused()) {
@@ -897,6 +940,8 @@ function main() {
     applyContentProtection,
     bgContextMenu,
     getPenetrate: () => penetrate,
+    setAutoscrollOn: (v) => { autoscrollOn = !!v; },
+    toast,
     openSettingsWin: () => createOrShowSettingsWindow(),
   };
   setupIpc(ctx);
