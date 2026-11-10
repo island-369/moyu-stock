@@ -30,6 +30,7 @@ let settingsVis = false; // 设置窗是否可见（可见时标题栏也要可�
 let suppressClick = false;
 let dragging = null;
 let lastDragY = 0;
+let dragOldKeys = null; // dragstart 时的显示序：云端写回排序用它推导「谁被拖到了哪」
 let penOn = false;
 let meetingOn = false; // 会议模式运行时状态（主进程经 evt:meeting 广播）
 let alphaT = null;
@@ -104,12 +105,24 @@ function measureSoon() {
   }, 120);
 }
 
+/* ---------------- 弹层管理（所有面板开关的唯一入口） ----------------
+   POP_IDS：互斥弹层（点外自动收起、Esc 逐个收、撑高窗口）；
+   ALL_PANEL_IDS 另含全高面板与引导（轮播暂停判定用，不参与撑高/互斥）。 */
+const POP_IDS = ['#addpop', '#vispop', '#grouppop', '#alertpop', '#pospop'];
+const ALL_PANEL_IDS = [...POP_IDS, '#newspanel', '#onboard'];
+/* 弹层 → 锚点按钮：外点收起时排除按钮自身（否则点按钮 = 先收后开，永远开不了） */
+const POP_ANCHORS = { '#addpop': '#btn-add', '#vispop': '#btn-eye', '#grouppop': '#btn-group' };
+
+const popIsOpen = (id) => { const el = $(id); return !!el && !el.hidden; };
+function popToggle(id) { const el = $(id); el.hidden = !el.hidden; syncPopExpand(); }
+function popOpen(id) { const el = $(id); el.hidden = false; syncPopExpand(); }
+function popClose(id) { const el = $(id); el.hidden = true; syncPopExpand(); }
+
 /* ---------------- 列表滚动（手动触发） ---------------- */
 /* 默认不滚；右键空白处「启动滚动」或眼睛面板启动后，列表缓慢下滚、到底停 2 秒回顶循环；
    鼠标悬停立即暂停、移开继续。速度按行高自适应（约 1.5 秒一行），各字号档观感一致。 */
 const autoScroll = (() => {
   const list = $('#list');
-  const POP_IDS = ['#vispop', '#grouppop', '#addpop', '#alertpop', '#newspanel', '#onboard'];
   const ROW_SECONDS = 1;    // 每滚一行的秒数
   const MANUAL_HOLD = 4000; // 手动滚动（滚轮/键盘）后暂停多久再续
   const DWELL_MS = 2000;    // 滚到底部的停留时长
@@ -135,7 +148,7 @@ const autoScroll = (() => {
     if (hover || sparkOpen || dragging) return true;
     if (Date.now() < manualUntil) return true;
     if (settings && settings.window.form === 'mini') return true;
-    for (const id of POP_IDS) {
+    for (const id of ALL_PANEL_IDS) {
       const el = $(id);
       if (el && !el.hidden) return true;
     }
@@ -221,7 +234,7 @@ const autoScroll = (() => {
     debug: () => ({
       running, need, hover, sparkOpen, dragging: !!dragging,
       manualPause: Date.now() < manualUntil, mini: !!(settings && settings.window.form === 'mini'),
-      pops: POP_IDS.filter((id) => { const el = $(id); return el && !el.hidden; }),
+      pops: ALL_PANEL_IDS.filter((id) => { const el = $(id); return el && !el.hidden; }),
       scrollTop: list.scrollTop, max: list.scrollHeight - list.clientHeight,
     }),
   };
@@ -231,7 +244,7 @@ const autoScroll = (() => {
 function syncPopExpand() {
   if (!settings) return;
   let need = 0;
-  for (const id of ['#vispop', '#grouppop', '#addpop', '#alertpop']) {
+  for (const id of POP_IDS) {
     const el = $(id);
     if (!el || el.hidden) continue;
     if (getComputedStyle(el).display === 'none') continue;
@@ -248,7 +261,7 @@ function syncPopExpand() {
 /** 收掉所有弹层（点窗口外 / 失焦 / Esc / 隐藏窗口时调用） */
 function closeAllPops() {
   let closed = false;
-  for (const id of ['#addpop', '#vispop', '#grouppop', '#alertpop']) {
+  for (const id of POP_IDS) {
     const el = $(id);
     if (el && !el.hidden) { el.hidden = true; closed = true; }
   }
@@ -268,7 +281,7 @@ function syncVis() {
   $('#vform-mini').classList.toggle('on', settings.window.form === 'mini');
   $('#vpen').classList.toggle('on', penOn);
   $('#vpen').textContent = penOn ? '已开启' : '开启';
-  const sm = normSort(settings.source.sortMode);
+  const sm = settings.source.sortMode || 'default'; // 归一化已收口到 Store（D2）
   document.querySelectorAll('#vsort .vbtn').forEach((b) => b.classList.toggle('on', b.dataset.v === sm));
   const starOnly = !!settings.source.filterStarred && settings.source.mode === 'manual';
   $('#vstar').classList.toggle('on', starOnly);
@@ -321,13 +334,24 @@ function applySettings(s) {
 
 /* ---------------- 渲染 ---------------- */
 
+let lastListKey = null; // 上一次渲染的列表标识（mode + 分组），切换时列表归顶
+
 function render(st) {
   state = st;
+  const listKey = st.mode + '#' + st.activeGroup;
+  const switched = lastListKey !== null && lastListKey !== listKey;
+  lastListKey = listKey;
   renderTitle(st);
   rebuildGroupPop(st);
   renderIndex(st);
   renderColHead(st);
   renderRows(st);
+  // 切换列表（分组/持仓/全部）后回到最上方：增量渲染会保留旧滚动位置，
+  // 不归顶的话新列表会停在旧列表的滚动深度处（新列表更短时被钳到中间）
+  if (switched) {
+    const list = $('#list');
+    if (list) list.scrollTop = 0;
+  }
   renderStatus(st);
   measureSoon();
 }
@@ -335,7 +359,7 @@ function render(st) {
 /** 排序循环：点列头三态循环（默认 → 降序 → 升序 → 默认）；
  *  若当前排的是另一列，则本次从降序开始（不在本列序列里时不要跳回默认） */
 function cycleSort(col) {
-  const cur = normSort(settings.source.sortMode);
+  const cur = settings.source.sortMode || 'default'; // 归一化已收口到 Store（D2）
   const seq = col === 'price'
     ? ['default', 'price-desc', 'price-asc']
     : ['default', 'pct-desc', 'pct-asc'];
@@ -348,7 +372,7 @@ function renderColHead(st) {
   const head = $('#colhead');
   if (!settings || !st.rows || !st.rows.length) { head.hidden = true; return; }
   head.hidden = false;
-  const m = normSort(settings.source.sortMode);
+  const m = settings.source.sortMode || 'default'; // 归一化已收口到 Store（D2）
   const price = $('#ch-price'), pct = $('#ch-pct'), name = $('#ch-name');
   const mark = (el, dir) => { el.classList.add('on'); el.textContent = el.dataset.base + ' ' + dir; };
   const clear = (el, base) => { el.classList.remove('on'); el.textContent = base; };
@@ -375,7 +399,7 @@ function renderTitle(st) {
     const dn = rows.filter((r) => r.pct != null && r.pct < 0).length;
     const wide = app.offsetWidth >= 300; // 窄条下只留指数，避免被截成“· …”
     el.textContent = sh && sh.price != null
-      ? (wide ? `沪 ${sh.price.toFixed(0)} ${fmtPct(sh.pct)} · 涨${up} 跌${dn}` : `沪 ${sh.price.toFixed(0)} ${fmtPct(sh.pct)}`)
+      ? (wide ? `沪 ${sh.price.toFixed(2)} ${fmtPct(sh.pct)} · 涨${up} 跌${dn}` : `沪 ${sh.price.toFixed(2)} ${fmtPct(sh.pct)}`)
       : '行情小窗';
     return;
   }
@@ -385,12 +409,18 @@ function renderTitle(st) {
     el.hidden = true;
     btn.hidden = false;
     let nm;
-    if (st.activeGroup === '__positions__') nm = `持仓 ${posCount}`;
+    if (st.activeGroup === '__positions__') {
+      // 持仓汇总（3.3）：有成本的行给出平均盈亏 %，标题一眼看总仓位方向
+      const withPl = (st.rows || []).filter((r) => r.cost != null && r.pl != null);
+      nm = withPl.length
+        ? `持仓 ${posCount} · 盈亏 ${fmtPct(+(withPl.reduce((s, r) => s + r.pl, 0) / withPl.length).toFixed(2))}`
+        : `持仓 ${posCount}`;
+    }
     else if (hasGroups) {
       const g = currentGroup(st);
       nm = g.gid === 'all' ? `全部 · ${st.rows.length}` : `${g.gname} ${g.count != null ? g.count : ''}`.trim();
     } else nm = `自选 · ${st.rows.length}`;
-    if (normSort(settings.source.sortMode) !== 'default') nm += ' ⇅';
+    if ((settings.source.sortMode || 'default') !== 'default') nm += ' ⇅';
     $('#btngroup-name').textContent = nm;
   } else {
     btn.hidden = true;
@@ -408,17 +438,11 @@ function currentGroup(st) {
   return st.groups.find((x) => String(x.gid) === String(a)) || st.groups[0];
 }
 
-/** 摸鱼排序：涨跌幅模式下按 pct 降序（最涨在前），一眼看异动 */
-/** 排序模式归一化（兼容旧值 pct → pct-desc） */
-function normSort(m) {
-  const v = m || 'default';
-  return v === 'pct' ? 'pct-desc' : v;
-}
-
-/** 排序：default=原序；其余按涨跌幅（持仓带成本时按盈亏）或价格升降，空值垫底 */
+/** 排序：default=原序；其余按涨跌幅（持仓带成本时按盈亏）或价格升降，空值垫底。
+ *  sortMode 历史值（pct）已在 Store 写入时归一化为 pct-desc，读侧不再需要副本（D2）。 */
 function sortedRows(st) {
   if (!settings || !st.rows) return st.rows || [];
-  const m = normSort(settings.source.sortMode);
+  const m = settings.source.sortMode || 'default';
   if (m === 'default') return st.rows;
   const val = (r) => {
     if (m.startsWith('pct')) {
@@ -494,15 +518,17 @@ function renderIndex(st) {
     const span = document.createElement('span');
     span.className = 'ix';
     const b = document.createElement('b');
-    b.textContent = (narrow ? '' : ix.short + ' ') + (ix.price != null ? ix.price.toFixed(ix.price >= 10000 ? 0 : 1) : '—');
+    b.textContent = (narrow ? '' : ix.short + ' ') + (ix.price != null ? ix.price.toFixed(2) : '—');
     const i = document.createElement('i');
     if (ix.pct == null) { i.className = 'fl'; i.textContent = '—'; }
     else {
       i.className = ix.pct > 0 ? 'up' : ix.pct < 0 ? 'dn' : 'fl';
-      i.textContent = (ix.pct > 0 ? '+' : '') + ix.pct.toFixed(1) + '%';
+      i.textContent = (ix.pct > 0 ? '+' : '') + ix.pct.toFixed(2) + '%';
       i.style.fontStyle = 'normal';
     }
     span.append(b, i);
+    // 悬停看全名与完整数值（条内是缩写，数值与悬停同为两位小数）
+    if (ix.name) span.title = `${ix.name} ${ix.price != null ? ix.price.toFixed(2) : ''} ${fmtPct(ix.pct)}`;
     bar.append(span);
   }
 }
@@ -525,7 +551,13 @@ function renderRows(st) {
   if (!st.rows.length) {
     list.style.display = 'none';
     empty.hidden = false;
-    $('#empty .big').textContent = '还没有自选';
+    // 云端空分组：两种加法都行——小窗内直接加（写回东财），或去 App 里加
+    const isCloud = st.mode === 'cloud';
+    $('#empty .big').textContent = isCloud ? '该分组还没有自选' : '还没有自选';
+    $('#empty .dim').textContent = isCloud
+      ? '点右上角 ＋ 搜索添加（同步到东财），或去 App 里加（自动同步）'
+      : '点右上角 ＋ 搜索添加，或到设置里粘贴导入';
+    $('#demo-btn').hidden = isCloud;
     return;
   }
   // 仅看置顶（手动模式）：自选几百只时快速聚焦到重点
@@ -536,12 +568,8 @@ function renderRows(st) {
     empty.hidden = false;
     $('#empty .big').textContent = '没有置顶的自选';
     $('#empty .dim').textContent = '眼睛面板 → 关闭「仅看置顶」即可恢复全部';
+    $('#demo-btn').hidden = false;
     return;
-  }
-  if (starOnly) {
-    // 过滤态下的空态文案复用后要还原默认提示
-    $('#empty .big').textContent = '还没有自选';
-    $('#empty .dim').textContent = '点右上角 ＋ 搜索添加，或到设置里粘贴导入';
   }
   empty.hidden = true;
   list.style.display = '';
@@ -561,7 +589,11 @@ function renderRows(st) {
     prev = el;
   }
   for (const [key, el] of [...rowEls]) {
-    if (!seen.has(key)) { el.remove(); rowEls.delete(key); }
+    if (!seen.has(key)) {
+      el.remove();
+      rowEls.delete(key);
+      prevPrices.delete(key); // D11：已删股票的缓存同步回收（此前只增不减）
+    }
   }
 }
 
@@ -601,15 +633,22 @@ function buildRow() {
     widget.invoke('app:ctx:menu', { key: el.dataset.key }).catch(() => {});
   });
   el.addEventListener('dragstart', (e) => {
-    if (settings && normSort(settings.source.sortMode) !== 'default') return; // 排序模式下禁拖拽
+    if (settings && (settings.source.sortMode || 'default') !== 'default') {
+      // 排序模式下禁拖拽（3.5：此前静默无反应，用户不知道为什么拖不动）
+      toast('排序中，拖拽已禁用 · 切回「默认」排序可调整顺序');
+      e.preventDefault();
+      return;
+    }
     dragging = el;
     el.classList.add('dragging');
+    dragOldKeys = [...$('#listinner').children].map((x) => x.dataset.key).filter(Boolean);
     e.dataTransfer.setData('text/plain', el.dataset.key);
     e.dataTransfer.effectAllowed = 'move';
   });
   el.addEventListener('dragend', () => {
     dragging = null;
     el.classList.remove('dragging');
+    dragOldKeys = null;
     clearInsertMarks();
     suppressClick = true;
     setTimeout(() => { suppressClick = false; }, 80);
@@ -632,7 +671,7 @@ function buildRow() {
     else el.parentNode.insertBefore(dragging, el.nextSibling);
     clearInsertMarks();
     const keys = [...$('#listinner').children].map((x) => x.dataset.key).filter(Boolean);
-    widget.invoke('app:list:reorder', { keys }).catch(() => {});
+    widget.invoke('app:list:reorder', { keys, oldKeys: dragOldKeys || [] }).catch(() => {});
   });
   return el;
 }
@@ -677,6 +716,15 @@ function updateRow(el, r) {
     el.classList.add('anim');
   }
   prevPrices.set(key, r.price);
+  // 悬停明细：完整名称/代码（行内可能被省略或隐藏）+ 持仓成本/数量/盈亏金额（不占行内空间）
+  const tip = r.suspended
+    ? `${r.name} ${r.code}\n停牌`
+    : `${r.name} ${r.code}\n现价 ${r.price != null ? r.price.toFixed(2) : '—'} · 今日 ${r.pct != null ? fmtPct(r.pct) : '—'}`
+      + (r.cost != null
+        ? `\n成本 ${r.cost}${r.qty ? ' · 数量 ' + r.qty : ''}`
+          + (r.pl != null ? `\n盈亏 ${fmtPct(r.pl)}${r.plAmt != null ? ' · ' + (r.plAmt > 0 ? '+' : '') + r.plAmt + ' 元' : ''}` : '')
+        : '');
+  if (el.dataset.tip !== tip) { el.dataset.tip = tip; el.title = tip; }
   }
   catch (e) {
     try { widget.invoke('app:debug', { msg: 'updateRow异常 ' + (e && e.message) + ' row=' + JSON.stringify(r).slice(0, 150) }); } catch (e2) {}
@@ -721,6 +769,7 @@ async function toggleSpark(el) {
     }
     data = { ts: Date.now(), points: res.points, preClose: res.preClose };
     sparkCache.set(key, data);
+    if (sparkCache.size > 60) sparkCache.delete(sparkCache.keys().next().value); // D11：分时缓存上限 60 条（FIFO，对齐主进程 trendsCache）
   }
   drawSpark(spark, data, r);
   revealRow(el);
@@ -744,6 +793,8 @@ function drawSpark(spark, data, r) {
   const avgs = data.points.map((p) => p.avg).filter((v) => v != null);
   const all = data.preClose != null ? prices.concat([data.preClose]) : prices;
   if (avgs.length) all.push(...avgs);
+  const cost = r.cost != null ? r.cost : null; // 持仓成本线：纳入值域，确保一定画得出来
+  if (cost != null) all.push(cost);
   let min = Math.min(...all), max = Math.max(...all);
   if (max - min < 1e-9) { max += 1; min -= 1; }
   const pad = (max - min) * 0.1;
@@ -757,6 +808,14 @@ function drawSpark(spark, data, r) {
     base.setAttribute('y1', y(data.preClose)); base.setAttribute('y2', y(data.preClose));
     base.setAttribute('class', 'base');
     svg.append(base);
+  }
+  // 成本线（蓝色点线，仅持仓股）：现价在成本上方=浮盈，一眼分水岭
+  if (cost != null && cost >= min && cost <= max) {
+    const cl = document.createElementNS(NS, 'line');
+    cl.setAttribute('x1', 0); cl.setAttribute('x2', W);
+    cl.setAttribute('y1', y(cost)); cl.setAttribute('y2', y(cost));
+    cl.setAttribute('class', 'cost');
+    svg.append(cl);
   }
   const up = r.prevClose != null
     ? data.points[data.points.length - 1].p >= r.prevClose
@@ -787,10 +846,19 @@ function drawSpark(spark, data, r) {
   const meta = document.createElement('div');
   meta.className = 'meta';
   const left = document.createElement('span');
-  left.textContent = `分时 ${data.points[0].t || ''} — ${lastP.t || ''}`;
+  // 高低与振幅（时间图定 09:30—15:00 无信息量，换成当日波动区间）
+  const hi = Math.max(...prices), lo = Math.min(...prices);
+  const amp = data.preClose ? ((hi - lo) / data.preClose) * 100 : null;
+  left.textContent = `高 ${hi.toFixed(2)} · 低 ${lo.toFixed(2)}${amp != null ? ' · 振幅 ' + amp.toFixed(2) + '%' : ''}`;
   const right = document.createElement('span');
   const lastAvg = data.points.map((p) => p.avg).filter((v) => v != null).pop();
   right.textContent = `昨收 ${data.preClose != null ? data.preClose.toFixed(2) : '—'}${lastAvg != null ? ' · 均价 ' + lastAvg.toFixed(2) : ''}`;
+  if (cost != null) {
+    const cs = document.createElement('span');
+    cs.className = 'cl';
+    cs.textContent = ` · 成本 ${cost.toFixed(2)}`;
+    right.append(cs);
+  }
   meta.append(left, right);
   spark.append(svg, meta);
 }
@@ -818,12 +886,37 @@ function renderStatus(st) {
   else if (st.mode === 'cloud') label = st.loggedIn ? '云端 · 已同步 ' + hhmmss(s.lastUpdate) : '云端 · 未登录';
   else label = '手动 · ' + hhmmss(s.lastUpdate);
   $('#statustext').textContent = label;
-  $('#statusright').textContent =
-    `${s.phaseLabel || ''} · ${s.source === 'eastmoney' ? '东财' : '腾讯'}${s.adaptive ? ' · 静默' : ''}`;
+  dot.title = label; // 悬停状态点看说明（网络异常/备源/已同步 各是什么意思）
+
+  // 右侧统计：自选平均涨跌 + 涨跌家数（此前只有「交易中 · 东财」，整体强弱要心算；迷你条反而有涨跌家数）
+  const right = $('#statusright');
+  right.textContent = '';
+  const mkSpan = (txt, cls) => {
+    const sp = document.createElement('span');
+    if (cls) sp.className = cls;
+    sp.textContent = txt;
+    return sp;
+  };
+  const rows = st.rows || [];
+  const valid = rows.filter((r) => r && r.pct != null && Number.isFinite(r.pct));
+  const narrow = app.classList.contains('narrow');
+  if (s.paused) right.append(mkSpan('已暂停', 'fl'));
+  if (valid.length && !narrow) {
+    const avg = valid.reduce((a, r) => a + r.pct, 0) / valid.length;
+    right.append(mkSpan('均' + fmtPct(+avg.toFixed(2)), avg > 0 ? 'up' : avg < 0 ? 'dn' : 'fl'));
+  }
+  if (rows.length) {
+    right.append(
+      mkSpan('涨' + valid.filter((r) => r.pct > 0).length, 'up'),
+      mkSpan('跌' + valid.filter((r) => r.pct < 0).length, 'dn'),
+    );
+  }
+  right.append(mkSpan(`${s.phaseLabel || ''} · ${s.source === 'eastmoney' ? '东财' : '腾讯'}${s.adaptive ? ' · 静默' : ''}`.trim()));
 
   const banner = $('#banner');
   const showBanner = penOn || (s.code === 'net-error' && stale) || s.code === 'logged-out';
   banner.hidden = !showBanner;
+  banner.style.cursor = (!penOn && s.code === 'net-error' && stale) ? 'pointer' : '';
   if (showBanner) {
     if (penOn) {
       $('#bannertext').textContent = '鼠标穿透中 · ⌥⇧X 恢复 · 或 ⌘Tab 切回本应用后按 Esc · 或右键 Dock 图标';
@@ -834,7 +927,7 @@ function renderStatus(st) {
       $('#banner-login').hidden = false;
       $('#banner-manual').hidden = false;
     } else {
-      $('#bannertext').textContent = `网络异常 · 第 ${s.retryCount || 1} 次重试 · 数据为 ${hhmm(s.lastUpdate)} 快照`;
+      $('#bannertext').textContent = `网络异常 · 第 ${s.retryCount || 1} 次重试 · 数据为 ${hhmm(s.lastUpdate)} 快照 · 点击立即重试`;
       $('#banner-login').hidden = true;
       $('#banner-manual').hidden = true;
     }
@@ -884,8 +977,13 @@ function attachSearch(inputEl, resultsEl, onDone) {
     const res = await widget.invoke('app:list:add', {
       market: r.market, code: r.code, secid: r.secid,
     }).catch(() => null);
-    if (res && res.dup) toast('已在自选列表中');
+    if (res && res.pos) {
+      // 持仓视图：加入的是本地持仓（非自选）
+      if (res.dup) toast('已在持仓列表中');
+      else toast('已加入持仓 · 右键「持仓成本 / 数量」可补成本');
+    } else if (res && res.dup) toast('已在自选列表中');
     else if (res && res.ok) toast('已添加 ' + r.name);
+    else if (res && res.message) toast(res.message); // 云端写回失败 / 未登录等主进程原因
     inputEl.value = '';
     rows = [];
     renderResults();
@@ -928,9 +1026,33 @@ function attachSearch(inputEl, resultsEl, onDone) {
   return { refreshCount: () => {} };
 }
 
-/* ---------------- 股价提醒弹层 ---------------- */
+/* ---------------- 持仓弹层（右键 → 加入持仓 / 持仓成本）：本地记录，不碰云自选 ---------------- */
 
-let apCtx = null; // 正在设置提醒的股票 {market, code, name, price}
+let ppCtx = null; // 正在编辑的股票 {market, code, name, price, exists, secid}
+
+function openPosEdit(info) {
+  ppCtx = {
+    market: String((info && info.market) || ''),
+    code: String((info && info.code) || ''),
+    name: (info && info.name) || (info && info.code) || '—',
+    price: info && Number.isFinite(info.price) ? info.price : null,
+    exists: !!(info && info.exists),
+    secid: (info && info.secid) || null,
+  };
+  $('#pp-name').textContent = ppCtx.name;
+  $('#pp-price').textContent = ppCtx.price != null ? '现价 ' + ppCtx.price.toFixed(2) : '';
+  // 回填已有成本/数量（未设 = 空）
+  $('#pp-cost').value = info && info.cost != null ? String(info.cost) : '';
+  $('#pp-qty').value = info && info.qty != null ? String(info.qty) : '';
+  $('#pp-save').textContent = ppCtx.exists ? '保存' : '加入持仓';
+  $('#pp-remove').hidden = !ppCtx.exists;
+  popOpen('#pospop');
+  setTimeout(() => { $('#pp-cost').focus(); }, 30);
+}
+
+/* ---------------- 个股预警弹层（右键 → 预警设置：到价 + 异动） ---------------- */
+
+let apCtx = null; // 正在设置预警的股票 {market, code, name, price}
 
 function openPriceAlert(info) {
   apCtx = {
@@ -941,11 +1063,18 @@ function openPriceAlert(info) {
   };
   $('#ap-name').textContent = apCtx.name;
   $('#ap-price').textContent = apCtx.price != null ? '现价 ' + apCtx.price.toFixed(2) : '现价 —';
-  $('#ap-gte').value = '';
-  $('#ap-lte').value = '';
+  // 回填已设预警（主进程算好随事件带来；未设过的方向仍为空，placeholder「不提醒」）
+  const ex = (info && info.existing) || {};
+  $('#ap-gte').value = ex.gte || '';
+  $('#ap-lte').value = ex.lte || '';
+  $('#ap-up').value = ex.up || '';
+  $('#ap-dn').value = ex.dn || '';
+  $('#sw-up-m').value = ex.swUpMins || '';
+  $('#sw-up').value = ex.swUp || '';
+  $('#sw-dn-m').value = ex.swDnMins || '';
+  $('#sw-dn').value = ex.swDn || '';
   renderApList();
-  $('#alertpop').hidden = false;
-  syncPopExpand();
+  popOpen('#alertpop');
   setTimeout(() => { $('#ap-gte').focus(); }, 30);
 }
 
@@ -953,17 +1082,29 @@ function renderApList() {
   const box = $('#ap-list');
   box.textContent = '';
   if (!apCtx || !settings) return;
-  const rules = ((settings.alerts || {}).priceRules || [])
-    .filter((r) => r.m === apCtx.market && r.c === apCtx.code);
-  for (const r of rules) {
+  const al = settings.alerts || {};
+  // 到价 + 异动两类规则合并展示，按创建时间排序
+  const items = [
+    ...(al.priceRules || []).map((r) => ({ ...r, _k: 'px' })),
+    ...(al.pctRules || []).map((r) => ({ ...r, _k: 'pct' })),
+    ...(al.swRules || []).map((r) => ({ ...r, _k: 'sw' })),
+  ]
+    .filter((r) => r.m === apCtx.market && r.c === apCtx.code)
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  for (const r of items) {
     const item = document.createElement('div');
     item.className = 'apitem';
     const txt = document.createElement('span');
-    txt.textContent = (r.op === 'lte' ? '跌到 ≤ ' : '涨到 ≥ ') + r.price.toFixed(2) + (r.hit ? '（已触发）' : '');
+    const cond = r._k === 'px'
+      ? (r.op === 'lte' ? '跌到 ≤ ' : '涨到 ≥ ') + r.price.toFixed(2)
+      : r._k === 'pct'
+        ? (r.op === 'lte' ? '跌幅超过 ' : '涨幅超过 ') + r.pct + '%'
+        : (r.mins || 5) + ' 分钟内' + (r.op === 'lte' ? '跌' : '涨') + '超 ' + r.pct + '%';
+    txt.textContent = cond + (r.hit ? '（已触发）' : '');
     const del = document.createElement('button');
     del.className = 'del';
     del.textContent = '×';
-    del.title = '删除该提醒';
+    del.title = '删除该预警';
     del.dataset.del = r.id;
     item.append(txt, del);
     box.append(item);
@@ -979,11 +1120,21 @@ function showOnboarding() {
   const steps = [...ob.querySelectorAll('.step')];
   const dots = [...ob.querySelectorAll('.ob-dot')];
 
+  // 步骤 2 内容随模式切换（A8）：云端模式改为同步引导——此前云端模式下第 2 步
+  // 添加的股票写进 manualList，登录后被云分组顶掉，用户以为添加失败
+  const syncObStep2 = () => {
+    const cloud = obMode === 'cloud';
+    $('#obsearch').hidden = cloud;
+    $('#obresults').hidden = cloud;
+    $('#obfoot').hidden = cloud;
+    $('#obcloudnote').hidden = !cloud;
+  };
   const go = (n) => {
     step = n;
     steps.forEach((el) => { el.hidden = Number(el.dataset.step) !== n; });
     dots.forEach((d, i) => d.classList.toggle('on', i < n));
-    if (n === 2) setTimeout(() => $('#obsearch').focus(), 50);
+    syncObStep2();
+    if (n === 2 && obMode !== 'cloud') setTimeout(() => $('#obsearch').focus(), 50);
   };
 
   ob.querySelectorAll('.optcard').forEach((card) => {
@@ -1020,10 +1171,19 @@ function showOnboarding() {
     toast('设置完成 · ⌥⇧H 老板键隐身 · ⌥⇧M 会议模式', 6000);
   };
 
-  // 步骤 2 的搜索
-  attachSearch($('#obsearch'), $('#obresults'));
-  $('#ob-demo').onclick = async () => { await addDemo(); };
-  $('#obcount').textContent = '当前 0 只';
+  // 步骤 2 的搜索（手动模式）；云端模式显示同步引导 + 「改用手动列表」入口
+  const obCount = () => (settings && settings.source.manualList || []).length;
+  const syncObCount = () => { $('#obcount').textContent = '当前 ' + obCount() + ' 只'; };
+  attachSearch($('#obsearch'), $('#obresults'), syncObCount);
+  $('#ob-demo').onclick = async () => { await addDemo(); setTimeout(syncObCount, 120); };
+  $('#ob-usemanual').onclick = () => {
+    obMode = 'manual';
+    widget.invoke('app:settings:set', { source: { mode: 'manual' } }).catch(() => {});
+    ob.querySelectorAll('.optcard').forEach((c) => c.classList.toggle('on', c.dataset.mode === 'manual'));
+    syncObStep2();
+    setTimeout(() => $('#obsearch').focus(), 50);
+  };
+  $('#obcount').textContent = '当前 ' + obCount() + ' 只';
 
   // 步骤 3 实时预览
   let t = null;
@@ -1041,7 +1201,7 @@ async function addDemo() {
   for (const [market, code] of [['SH', '600519'], ['SH', '510300'], ['SH', '000001']]) {
     await widget.invoke('app:list:add', { market, code }).catch(() => {});
   }
-  toast('已添加示例组合');
+  toast('已添加示例组合 · 单击行可展开分时图', 5000);
 }
 
 /* ---------------- 快讯 ---------------- */
@@ -1091,7 +1251,32 @@ async function boot() {
   if (data.state) render(data.state);
   if (!data.settings.onboarded) showOnboarding();
 
-  widget.on('evt:state', render);
+  widget.on('evt:state', (st) => {
+    // 轻量状态补丁（数据签名未变，3.1）：只更新状态条，不做全量渲染
+    if (st && st.light) {
+      if (state) { state.status = st.status; if (!document.hidden) renderStatus(state); }
+      return;
+    }
+    state = st;
+    if (!document.hidden) render(st); // 窗口隐藏期间不碰 DOM（省 CPU），可见时一次性补渲染
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && state) render(state); // 隐藏期间错过的全量渲染，可见时补上
+  });
+
+  // 网络异常横幅：点击立即重试（不必去托盘找「刷新自选」）
+  $('#banner').addEventListener('click', (e) => {
+    if (e.target.closest('button')) return;
+    if (state && state.status && state.status.code === 'net-error') {
+      widget.invoke('app:refresh').catch(() => {});
+      toast('已重新拉取行情');
+    }
+  });
+
+  // 按住 ⌥ 临时显示股票代码（松开恢复隐藏）：需要核对代码时不用去设置里开关
+  document.addEventListener('keydown', (e) => { if (e.key === 'Alt') app.classList.add('peek-code'); });
+  document.addEventListener('keyup', (e) => { if (e.key === 'Alt') app.classList.remove('peek-code'); });
+  window.addEventListener('blur', () => app.classList.remove('peek-code'));
   widget.on('evt:settings', applySettings);
   widget.on('evt:popup:close', () => closeAllPops());
   widget.on('evt:win:settings-vis', (p) => { settingsVis = !!(p && p.visible); syncPopExpand(); });
@@ -1107,6 +1292,7 @@ async function boot() {
   });
   widget.on('evt:focus-search', () => openAddPop());
   widget.on('evt:pricealert', openPriceAlert);
+  widget.on('evt:posedit', openPosEdit);
   widget.on('evt:autoscroll', (p) => { autoScroll.setRunning(!!(p && p.on)); syncVis(); });
 
   // 图标
@@ -1148,18 +1334,13 @@ async function boot() {
       widget.invoke('app:win:form', { form: 'full' }).catch(() => {});
       return;
     }
-    const pop = $('#vispop');
-    pop.hidden = !pop.hidden;
-    if (!pop.hidden) syncVis();
-    syncPopExpand();
+    if (popIsOpen('#vispop')) { popClose('#vispop'); return; }
+    popOpen('#vispop');
+    syncVis();
   };
 
   // 分组下拉
-  $('#btn-group').onclick = () => {
-    const pop = $('#grouppop');
-    pop.hidden = !pop.hidden;
-    syncPopExpand();
-  };
+  $('#btn-group').onclick = () => popToggle('#grouppop');
   $('#visalpha').addEventListener('input', () => {
     const v = Number($('#visalpha').value);
     $('#visalpha-val').textContent = v + '%';
@@ -1184,17 +1365,42 @@ async function boot() {
   $('#vscroll').onclick = () => {
     autoScroll.toggle();
     // 启动后收起面板：面板开着时列表是暂停的，收起立刻能看到滚起来
-    if (autoScroll.isRunning()) { $('#vispop').hidden = true; syncPopExpand(); }
+    if (autoScroll.isRunning()) popClose('#vispop');
     syncVis();
   };
 
-  // 股价提醒弹层（列表右键 → 股价提醒…）：涨到/跌到可同时各设一个，持续有效
-  for (const id of ['#ap-gte', '#ap-lte']) {
+  // 持仓弹层（右键 → 加入持仓 / 持仓成本）：Enter 提交，保存 = upsert，删除走 positions:remove
+  for (const id of ['#pp-cost', '#pp-qty']) {
+    $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#pp-save').click(); });
+  }
+  $('#pp-save').onclick = async () => {
+    if (!ppCtx) return;
+    const res = await widget.invoke('app:positions:set', {
+      market: ppCtx.market, code: ppCtx.code, secid: ppCtx.secid,
+      cost: parseFloat($('#pp-cost').value) || null,
+      qty: parseInt($('#pp-qty').value, 10) || null,
+    }).catch(() => null);
+    if (res && res.ok) {
+      popClose('#pospop');
+      toast(res.added ? '已加入持仓（本地记录）' : '持仓已更新');
+    }
+  };
+  $('#pp-remove').onclick = async () => {
+    if (!ppCtx) return;
+    const res = await widget.invoke('app:positions:remove', { market: ppCtx.market, code: ppCtx.code }).catch(() => null);
+    if (res && res.ok) {
+      popClose('#pospop');
+      toast('已从持仓删除');
+    }
+  };
+
+  // 个股预警弹层（列表右键 → 预警设置…）：到价 + 涨/跌幅异动 + 急涨急跌（时间窗）可同时设，持续有效
+  for (const id of ['#ap-gte', '#ap-lte', '#ap-up', '#ap-dn', '#sw-up-m', '#sw-up', '#sw-dn-m', '#sw-dn']) {
     $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#ap-add').click(); });
   }
   $('#ap-add').onclick = async () => {
     if (!apCtx) return;
-    const adds = [];
+    const adds = [];  // 到价
     for (const [id, op] of [['#ap-gte', 'gte'], ['#ap-lte', 'lte']]) {
       const raw = $(id).value.trim();
       if (raw === '') continue;
@@ -1205,22 +1411,57 @@ async function boot() {
       }
       adds.push({ op, price: v });
     }
-    if (!adds.length) { toast('至少填一个目标价格'); return; }
     if (adds.length === 2 && adds[0].price <= adds[1].price) { toast('「涨到 ≥」应高于「跌到 ≤」'); return; }
-    let okN = 0, dupN = 0;
-    for (const a of adds) {
-      const res = await widget.invoke('app:pricealert:add', {
-        market: apCtx.market, code: apCtx.code, op: a.op, price: a.price,
-      }).catch(() => null);
-      if (res && res.ok && !res.dup) okN += 1;
-      else if (res && res.dup) dupN += 1;
+    const padds = []; // 异动（当日涨/跌幅）
+    for (const [id, op] of [['#ap-up', 'gte'], ['#ap-dn', 'lte']]) {
+      const raw = $(id).value.trim();
+      if (raw === '') continue;
+      const v = Number(raw);
+      if (!Number.isFinite(v) || v <= 0 || v > 1000) {
+        toast(op === 'gte' ? '「涨幅超过」请输入有效百分比' : '「跌幅超过」请输入有效百分比');
+        return;
+      }
+      padds.push({ op, pct: v });
+    }
+    const sadds = []; // 急涨急跌（N 分钟内涨/跌幅）
+    for (const [mid, pid, op] of [['#sw-up-m', '#sw-up', 'gte'], ['#sw-dn-m', '#sw-dn', 'lte']]) {
+      const rawP = $(pid).value.trim();
+      if (rawP === '') continue;
+      const v = Number(rawP);
+      const mins = Number($(mid).value.trim() || 5); // 分钟留空默认 5
+      if (!Number.isFinite(v) || v <= 0 || v > 100) {
+        toast(op === 'gte' ? '「分钟内涨超」请输入有效百分比' : '「分钟内跌超」请输入有效百分比');
+        return;
+      }
+      if (!Number.isFinite(mins) || mins <= 0 || mins > 240) { toast('「分钟」请输入 1–240 之间的数值'); return; }
+      sadds.push({ op, pct: v, mins });
+    }
+    if (!adds.length && !padds.length && !sadds.length) { toast('至少填一个预警条件'); return; }
+    let okN = 0, dupN = 0, total = 0;
+    const label = [];
+    for (const [kind, list] of [['px', adds], ['pct', padds], ['sw', sadds]]) {
+      for (const a of list) {
+        total += 1;
+        const payload = kind === 'px'
+          ? { market: apCtx.market, code: apCtx.code, op: a.op, price: a.price }
+          : kind === 'pct'
+            ? { kind: 'pct', market: apCtx.market, code: apCtx.code, op: a.op, pct: a.pct }
+            : { kind: 'sw', market: apCtx.market, code: apCtx.code, op: a.op, pct: a.pct, mins: a.mins };
+        const res = await widget.invoke('app:pricealert:add', payload).catch(() => null);
+        if (res && res.ok && !res.dup) {
+          okN += 1;
+          label.push(kind === 'px'
+            ? (a.op === 'lte' ? '跌到 ≤ ' : '涨到 ≥ ') + a.price.toFixed(2)
+            : kind === 'pct'
+              ? (a.op === 'lte' ? '跌幅超过 ' : '涨幅超过 ') + a.pct + '%'
+              : a.mins + ' 分钟内' + (a.op === 'lte' ? '跌' : '涨') + '超 ' + a.pct + '%');
+        } else if (res && res.dup) dupN += 1;
+      }
     }
     if (okN) {
-      const label = adds.map((a) => (a.op === 'lte' ? '跌到 ≤ ' : '涨到 ≥ ') + a.price.toFixed(2)).join(' · ');
-      toast(`已设置 ${apCtx.name} ${label} · 持续有效，到价弹通知`);
-      $('#alertpop').hidden = true;
-      syncPopExpand();
-    } else if (dupN === adds.length) toast('该提醒已存在');
+      toast(`已设置 ${apCtx.name} ${label.join(' · ')} · 持续有效，命中弹通知`);
+      popClose('#alertpop');
+    } else if (dupN === total) toast('该预警已存在');
     else toast('设置失败，请重试');
   };
   $('#ap-list').onclick = async (e) => {
@@ -1230,27 +1471,20 @@ async function boot() {
   };
   $('#ap-preview').onclick = () => widget.invoke('app:pricetoast:preview').catch(() => {});
   $('#vboss').onclick = () => {
-    $('#vispop').hidden = true;
-    syncPopExpand();
+    popClose('#vispop');
     widget.invoke('app:boss').catch(() => {});
   };
   $('#btn-add').onclick = () => openAddPop();
 
   // ⌘F / 搜索按钮共用：打开添加弹层并聚焦
   function openAddPop() {
-    const pop = $('#addpop');
-    if (pop.hidden) {
-      pop.hidden = false;
-      $('#addinput').value = '';
-      $('#addinput').focus();
-    } else {
-      pop.hidden = true;
-    }
-    syncPopExpand();
+    const opening = !popIsOpen('#addpop');
+    popToggle('#addpop');
+    if (opening) { $('#addinput').value = ''; $('#addinput').focus(); }
   }
 
   // 添加弹层
-  attachSearch($('#addinput'), $('#addresults'), () => { $('#addpop').hidden = true; syncPopExpand(); });
+  attachSearch($('#addinput'), $('#addresults'), () => popClose('#addpop'));
 
   // 状态框按钮
   $('#demo-btn').onclick = addDemo;
@@ -1299,40 +1533,29 @@ async function boot() {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (penOn) {
-      $('#addpop').hidden = true;
-      $('#vispop').hidden = true;
-      $('#grouppop').hidden = true;
+      for (const id of POP_IDS) $(id).hidden = true;
       syncPopExpand();
       if (newsOpen) toggleNews();
       widget.invoke('app:penetrate').catch(() => {});
       return;
     }
-    if (!$('#addpop').hidden) { $('#addpop').hidden = true; syncPopExpand(); return; }
-    if (!$('#vispop').hidden) { $('#vispop').hidden = true; syncPopExpand(); return; }
-    if (!$('#grouppop').hidden) { $('#grouppop').hidden = true; syncPopExpand(); return; }
-    if (!$('#alertpop').hidden) { $('#alertpop').hidden = true; syncPopExpand(); return; }
+    for (const id of POP_IDS) {
+      if (popIsOpen(id)) { popClose(id); return; }
+    }
     if (newsOpen) toggleNews();
   });
 
-  // 点击弹层外关闭（添加 / 可视控制 / 分组）；同时清除键盘选中态（点鼠标即放弃键选）
+  // 点击弹层外关闭；同时清除键盘选中态（点鼠标即放弃键选）
   document.addEventListener('mousedown', (e) => {
     if (kSel != null) { kSel = null; applyK(); }
     let closed = false;
-    const pop = $('#addpop');
-    if (!pop.hidden && !pop.contains(e.target) && !$('#btn-add').contains(e.target)) {
-      pop.hidden = true; closed = true;
-    }
-    const vp = $('#vispop');
-    if (!vp.hidden && !vp.contains(e.target) && !$('#btn-eye').contains(e.target)) {
-      vp.hidden = true; closed = true;
-    }
-    const gp = $('#grouppop');
-    if (!gp.hidden && !gp.contains(e.target) && !$('#btn-group').contains(e.target)) {
-      gp.hidden = true; closed = true;
-    }
-    const ap = $('#alertpop');
-    if (!ap.hidden && !ap.contains(e.target)) {
-      ap.hidden = true; closed = true;
+    for (const id of POP_IDS) {
+      const el = $(id);
+      if (el.hidden || el.contains(e.target)) continue;
+      const anchor = POP_ANCHORS[id] && $(POP_ANCHORS[id]);
+      if (anchor && anchor.contains(e.target)) continue; // 点在对应按钮上：交给按钮自己的 toggle
+      el.hidden = true;
+      closed = true;
     }
     if (closed) syncPopExpand();
     // 窗口内任意点击也收起设置窗（非激活面板不夺焦点，失焦事件不一定触发）

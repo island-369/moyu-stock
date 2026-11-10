@@ -9,6 +9,7 @@ if (typeof widget !== 'undefined') {
     $('#t-title').textContent = p.title || '股价提醒';
     $('#t-body').textContent = p.body || '';
     document.documentElement.style.setProperty('--accent', p.accent || '#E5C24F');
+    $('#t-timer').textContent = p.secs > 0 ? p.secs + ' 秒后自动消失' : '不会自动消失，点 × 关闭';
   });
 
   let downPt = null;

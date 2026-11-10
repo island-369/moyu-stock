@@ -8,8 +8,10 @@
   "scripts": {
     "start": "electron .",
     "test": "node tests/run.js",
+    "lint": "node tools/lint.js",
     "icon": "node tools/gen-icon.js",
     "smoke": "electron . --smoke",
+    "validate-write": "electron . --validate-write",
     "dist": "electron-builder"
   },
   "devDependencies": {

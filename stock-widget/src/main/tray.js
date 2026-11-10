@@ -89,8 +89,9 @@ class TrayMgr {
 
   /** 指数标题：紧凑格式（菜单栏拥挤时更容得下）；tooltip 保留完整精度。
    *  hide=true 完全隐匿（title/tooltip 一起清，共享屏幕时菜单栏也不暴露）；
-   *  signal: 1=有向上异动 ▲ / -1=有向下异动 ▼（菜单栏信号提醒，最低调） */
-  setIndexTitle(indexes, hide, signal) {
+   *  signal: ±1=个股异动 ▲/▼，±2=大盘异动 ▲▲/▼▼（双符号区分）；
+   *  stale=true 数据滞后（隐藏暂停中/拉取失败超 5 分钟）→ 尾部中性「·」。 */
+  setIndexTitle(indexes, hide, signal, stale = false) {
     if (!this.tray) return;
     const sh = (indexes || []).find((i) => i.secid === '1.000001');
     if (hide || !sh || sh.price == null) {
@@ -99,8 +100,8 @@ class TrayMgr {
       return;
     }
     const sign = (sh.pct || 0) >= 0 ? '+' : '';
-    const sig = signal === 1 ? ' ▲' : signal === -1 ? ' ▼' : '';
-    const title = `沪${sh.price.toFixed(0)} ${sign}${(sh.pct || 0).toFixed(1)}%${sig}`;
+    const sig = signal === 2 ? ' ▲▲' : signal === -2 ? ' ▼▼' : signal === 1 ? ' ▲' : signal === -1 ? ' ▼' : '';
+    const title = `沪${sh.price.toFixed(0)} ${sign}${(sh.pct || 0).toFixed(1)}%${sig}${stale ? ' ·' : ''}`;
     try {
       this.tray.setTitle(title);
       if (!this._titleLogged) {
@@ -110,7 +111,7 @@ class TrayMgr {
     } catch (e) {
       this.log.error('菜单栏标题设置失败: ' + e.message);
     }
-    this.tray.setToolTip(`行情小窗 · 上证 ${sh.price.toFixed(2)} ${sign}${(sh.pct || 0).toFixed(2)}%`);
+    this.tray.setToolTip(`行情小窗 · 上证 ${sh.price.toFixed(2)} ${sign}${(sh.pct || 0).toFixed(2)}%${stale ? ' · 数据可能滞后' : ''}`);
   }
 
   destroy() {

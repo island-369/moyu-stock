@@ -97,6 +97,67 @@ async function groupList(fetcher) {
   return j.data.ginfolist.map((g) => ({ gid: String(g.gid), gname: String(g.gname || '分组') }));
 }
 
+/* ---------------- 写回（2026-11-10 契约） ----------------
+ * 从生产前端 quote.eastmoney.com/zixuan/build/index.js 逆向确认：
+ *  - 写与读同一套 webouter/ 前缀 + Cookie 鉴权 + 同一 appkey，GET JSONP；
+ *  - sc 格式 = secid 的 '.' → '$'（1.600519 → 1$600519；生产端同样会把 $ 编码成 %24）；
+ *  - 返回 state==0 即成功，非 0 带 message（含「已存在」等业务失败，不代表登录失效）；
+ *  - 仅 scs 超 3500 字符的批量操作才需要 POST JSON（小窗单步操作用不到）。
+ * 已确认但本期未接的端点（后续可加）：
+ *  - ms?  换组（g1=源组, g=目标组, scs=逗号列表）
+ *  - has?/hcs? 置顶 / 取消置顶（g, sc）
+ *  - ag?/mg?/dg? 新建组 / 改组名 / 删组；usindex? 组列表排序（index=JSON 串）
+ *  - bs?  交易备注（持仓成本等） */
+
+/** secid → 写接口 sc：'1.600519' → '1$600519' */
+function toSc(secid) {
+  return String(secid || '').replace('.', '$');
+}
+
+/** 查询串（跳过 null/undefined，保留空串——ss? 的边界邻居就是空串） */
+function qs(params) {
+  const out = [];
+  for (const k of Object.keys(params)) {
+    const v = params[k];
+    if (v == null) continue;
+    out.push(encodeURIComponent(k) + '=' + encodeURIComponent(String(v)));
+  }
+  return out.join('&');
+}
+
+/** 统一写调用：成功 {re:true}；state!=0 → {re:false,message}；网络层异常直接 throw（kind:network） */
+async function writeCall(fetcher, endpoint, params) {
+  const j = await request(fetcher, apiPath(endpoint, '&' + qs(params)));
+  if (j && j.state === 0) return { re: true };
+  return { re: false, message: (j && j.message) || ('state ' + (j && j.state)) };
+}
+
+/** 加自选到指定分组 */
+async function addStock(fetcher, gid, secid) {
+  return writeCall(fetcher, 'as', { g: String(gid), sc: toSc(secid) });
+}
+
+/** 加自选到账号默认分组（无 g 参数，由服务端落位） */
+async function addStockToDefault(fetcher, secid) {
+  return writeCall(fetcher, 'asz', { sc: toSc(secid) });
+}
+
+/** 从指定分组删除自选 */
+async function deleteStock(fetcher, gid, secid) {
+  return writeCall(fetcher, 'ds', { g: String(gid), sc: toSc(secid) });
+}
+
+/** 拖拽排序：把 sc 放到 sc1 与 sc2 之间（sc1/sc2 传空串 = 列表顶/底边界）。
+ *  邻居取自拖拽后的显示序，与生产端拖拽行为一致。 */
+async function sortStock(fetcher, gid, secid, prevSecid, nextSecid) {
+  return writeCall(fetcher, 'ss', {
+    g: String(gid),
+    sc: toSc(secid),
+    sc1: prevSecid ? toSc(prevSecid) : '',
+    sc2: nextSecid ? toSc(nextSecid) : '',
+  });
+}
+
 /**
  * 组内股票。
  * @returns {Promise<Array<{market,code,secid,star:boolean}>>}
@@ -132,4 +193,7 @@ async function probeLogin(fetcher, log) {
 const HEADERS = { 'User-Agent': UA };
 const REFERER = 'https://quote.eastmoney.com/zixuan/';
 
-module.exports = { groupList, groupStocks, probeLogin, parseSecurity, HEADERS, REFERER };
+module.exports = {
+  groupList, groupStocks, probeLogin, parseSecurity, HEADERS, REFERER,
+  toSc, qs, addStock, addStockToDefault, deleteStock, sortStock,
+};

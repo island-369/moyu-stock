@@ -10,7 +10,14 @@ mac:
   category: public.app-category.finance
   target:
     - target: dmg
-      arch: [arm64]
+      # arm64 + x64：Intel Mac 同事也能装（此前仅 arm64）
+      arch: [arm64, x64]
   darkModeSupport: true
-  extendInfo:
-    LSUIElement: true
+  # LSUIElement 已移除（2026-10 审查 D9）：它与运行时「dockIcon 默认 true + 启动
+  # dock.show() 自愈」的语义互相打架（正是那个自愈 hack 的根源）。
+  # bundle 按常规应用打包，Dock 显隐完全交给应用内设置/隐身联动。
+  #
+  # 对外分发前还需补签名与公证（需要 Apple 开发者证书，否则 Gatekeeper 拦截）：
+  # identity: "Developer ID Application: …"
+  # hardenedRuntime: true
+  # 并配 afterSign 钩子走 notarize（APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID）

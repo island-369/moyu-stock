@@ -23,6 +23,15 @@ body.smoke-bg {
   --row-h: 36px;
   --code-fs: 10.5px;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* 弹层层级（低 → 高）：缩放条 < 弹层面板 < 全高面板（快讯） < 引导 < 提示条 */
+  --z-rz: 25;
+  --z-pop: 30;
+  --z-panel: 40;
+  --z-ob: 50;
+  --z-toast: 60;
+  /* 弹层卡片统一：圆角 / 阴影 */
+  --pop-radius: 9px;
+  --pop-shadow: 0 10px 32px rgba(0,0,0,.30);
 }
 
 #app[data-theme="dark"] {
@@ -130,19 +139,36 @@ body.smoke-bg {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---------- 分组下拉 ---------- */
-#grouppop {
+/* ---------- 弹层公共卡片（addpop / grouppop / alertpop / vispop 统一） ----------
+   卡片底、边框、圆角、阴影、层级、内边距全部收口于此；
+   各弹层只保留定位差异（left/right/width）与自身内容样式。 */
+.pop {
   position: absolute;
   top: 36px;
-  left: 10px;
-  width: min(220px, calc(100% - 20px));
   background: var(--solid);
   border: 1px solid var(--win-border);
-  border-radius: 8px;
-  z-index: 30;
-  overflow: hidden;
+  border-radius: var(--pop-radius);
+  box-shadow: var(--pop-shadow);
+  padding: 11px 12px;
+  z-index: var(--z-pop);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   -webkit-app-region: no-drag;
 }
+/* 面板小节标题（弹层内分组分隔）：首节无边距，其余上边线分隔 */
+.pcap {
+  font-size: .68em;
+  color: var(--tx3);
+  letter-spacing: .06em;
+  margin-top: 3px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hair);
+}
+.pop > .pcap:first-of-type { margin-top: 0; padding-top: 0; border-top: 0; }
+
+/* ---------- 分组下拉 ---------- */
+#grouppop { left: 10px; width: min(220px, calc(100% - 20px)); padding: 0; overflow: hidden; gap: 0; }
 .gp-head {
   font-size: .72em;
   color: var(--tx3);
@@ -195,8 +221,6 @@ body.smoke-bg {
 .ib.danger { margin-left: 4px; }
 .ib.danger:hover { color: var(--red); }
 .ib.danger.armed { color: #fff; background: var(--red); }
-
-/* ---------- 旧分组 tab 已废弃，元素与样式一并移除 ---------- */
 
 /* ---------- 指数条 ---------- */
 #indexbar {
@@ -364,6 +388,11 @@ body.smoke-bg {
 .spark circle.up { fill: var(--rise); }
 .spark circle.dn { fill: var(--fall); }
 .spark .base { stroke: var(--tx3); stroke-width: .8; stroke-dasharray: 3 3; }
+/* 持仓成本线（蓝色点线）：与均价线（黄虚线）、昨收（灰虚线）三线区分 */
+.spark polyline.cost, .spark line.cost { stroke: #5B9CFF; stroke-width: 1; stroke-dasharray: 4 2; }
+#app.mono .spark polyline.cost, #app.mono .spark line.cost { stroke: var(--tx3); }
+.spark .meta .cl { color: #5B9CFF; }
+#app.mono .spark .meta .cl { color: var(--tx3); }
 .spark .meta {
   display: flex;
   justify-content: space-between;
@@ -456,21 +485,12 @@ body.smoke-bg {
 .dot-warn { background: #E5C24F; }
 .dot-err { background: #E5484D; }
 .dot-idle { background: var(--tx3); }
-#statustext { overflow: hidden; text-overflow: ellipsis; }
+#statustext { overflow: hidden; text-overflow: ellipsis; min-width: 0; } /* min-width:0 让省略号在窄窗真正生效 */
+/* 右侧统计组：均±% · 涨N 跌N · 时段 · 数据源（涨跌着色随红绿/单色/换色设置自动适配） */
+#statusright { display: flex; gap: 5px; align-items: center; flex: none; font-variant-numeric: tabular-nums; }
 
 /* ---------- 添加弹层 ---------- */
-#addpop {
-  position: absolute;
-  top: 36px;
-  left: 10px;
-  right: 10px;
-  background: var(--solid);
-  border: 1px solid var(--win-border);
-  border-radius: 8px;
-  overflow: hidden;
-  z-index: 30;
-  -webkit-app-region: no-drag;
-}
+#addpop { left: 10px; right: 10px; padding: 0; overflow: hidden; gap: 0; }
 #addpop input {
   width: 100%;
   border: 0;
@@ -505,28 +525,17 @@ body.smoke-bg {
 }
 .sr-none { padding: 10px 12px; color: var(--tx3); font-size: .88em; }
 
-/* ---------- 股价提醒弹层 ---------- */
-#alertpop {
-  position: absolute;
-  top: 36px;
-  left: 10px;
-  right: 10px;
-  background: var(--solid);
-  border: 1px solid var(--win-border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  -webkit-app-region: no-drag;
-}
+/* ---------- 个股预警弹层（右键 → 预警设置：到价 + 异动 + 急涨急跌） ---------- */
+#alertpop { left: 10px; right: 10px; }
 .ap-head { display: flex; align-items: baseline; gap: 8px; }
 .ap-head b { font-weight: 590; }
 #ap-price { font-variant-numeric: tabular-nums; }
-#alertpop input[type="number"] {
-  flex: 1;
-  max-width: 130px;
+/* 行网格：标签列左对齐、控件列右对齐——八个输入框两列严格对齐 */
+#alertpop .vrow { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px; }
+#alertpop .vrow > input[type="number"],
+#alertpop .vrow > .ap-pct { justify-self: end; }
+#alertpop input[type="number"],
+#pospop input[type="number"] {
   border: 1px solid var(--win-border);
   border-radius: 6px;
   background: transparent;
@@ -537,11 +546,22 @@ body.smoke-bg {
   outline: none;
   text-align: right;
   font-variant-numeric: tabular-nums;
+  width: 84px;
 }
-#alertpop input[type="number"]:focus { border-color: var(--tx2); }
+#alertpop input[type="number"]:focus,
+#pospop input[type="number"]:focus { border-color: var(--tx2); }
 .ap-hint { font-size: .68em; color: var(--tx3); line-height: 1.5; }
+.ap-pct { display: flex; align-items: center; gap: 4px; color: var(--tx2); font-size: .82em; }
+#alertpop .ap-pct input[type="number"] { width: 72px; }
+#alertpop .ap-pct input.swm { width: 50px; }
 #ap-add { align-self: flex-start; }
 #ap-preview { align-self: flex-start; }
+#pp-save { align-self: flex-start; }
+#pp-remove { align-self: flex-start; }
+#pospop .vrow { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px; }
+#pospop .vrow > input[type="number"] { justify-self: end; width: 104px; }
+/* 「已设预警」区：列表为空时标题一并隐藏 */
+#alertpop:has(#ap-list:empty) .ap-list-cap { display: none; }
 .apitem {
   display: flex;
   align-items: center;
@@ -563,22 +583,8 @@ body.smoke-bg {
 .apitem .del:hover { color: var(--red); }
 #ap-list:empty { display: none; }
 
-/* ---------- 可视控制弹层 ---------- */
-#vispop {
-  position: absolute;
-  top: 36px;
-  right: 10px;
-  width: min(224px, calc(100% - 20px));
-  background: var(--solid);
-  border: 1px solid var(--win-border);
-  border-radius: 8px;
-  padding: 11px 12px 9px;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  -webkit-app-region: no-drag;
-}
+/* ---------- 可视控制弹层（外观 / 列表 / 隐蔽 三节） ---------- */
+#vispop { right: 10px; width: min(224px, calc(100% - 20px)); padding: 11px 12px 9px; gap: 9px; }
 .vrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .vlabel { font-size: .82em; color: var(--tx2); }
 .vval {
@@ -620,7 +626,7 @@ body.smoke-bg {
   background: var(--solid);
   border-left: 1px solid var(--win-border);
   border-radius: 0 10px 10px 0;
-  z-index: 40;
+  z-index: var(--z-panel);
   display: flex;
   flex-direction: column;
 }
@@ -647,7 +653,7 @@ body.smoke-bg {
   inset: 0;
   background: var(--solid);
   border-radius: 10px;
-  z-index: 50;
+  z-index: var(--z-ob);
   display: flex;
   flex-direction: column;
   padding: 14px 16px;
@@ -720,7 +726,7 @@ body.smoke-bg {
   font-size: .8em;
   padding: 5px 14px;
   border-radius: 7px;
-  z-index: 60;
+  z-index: var(--z-toast);
   white-space: nowrap;
   max-width: 92%;
   overflow: hidden;
@@ -728,7 +734,7 @@ body.smoke-bg {
 }
 
 /* ---------- 边缘缩放条（免激活直接拖） ---------- */
-.rz { position: absolute; z-index: 25; -webkit-app-region: no-drag; }
+.rz { position: absolute; z-index: var(--z-rz); -webkit-app-region: no-drag; }
 .rz:hover { background: rgba(128,128,128,.16); }
 #rz-e { right: -2px; top: 32px; bottom: 0; width: 7px; cursor: ew-resize; }
 #rz-s { bottom: -2px; left: 0; right: 0; height: 7px; cursor: ns-resize; }
@@ -749,3 +755,10 @@ body.smoke-bg {
 /* 迷你条：搜索按钮让位给指数文本（展开后即可搜索） */
 #app[data-form="mini"] #btn-add { display: none; }
 #app[data-form="mini"] #vispop { display: none !important; }
+
+/* 引导步骤 2：云端模式的同步引导块（A8） */
+#obcloudnote { line-height: 1.7; margin: 8px 0 2px; }
+
+/* 按住 ⌥ 临时显示代码：布局对齐「显示代码」形态，避免行宽跳动 */
+#app.hide-code.peek-code .cd { display: inline; }
+#app.hide-code.peek-code .nm { width: 7.2em; flex: none; }

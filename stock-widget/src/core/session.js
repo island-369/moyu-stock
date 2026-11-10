@@ -32,10 +32,14 @@ function hkPhase(d) {
   return 'closed';
 }
 
-/** 美股宽窗口（北京时间 20:30–05:00），覆盖冬夏令时；误判由自适应降速兜底 */
+/** 美股宽窗口（北京时间 20:30–05:00），覆盖冬夏令时；误判由自适应降速兜底。
+ *  2026-10 修复：北京周六凌晨 = 美股周五晚盘（冬令时至 04:00、夏令时至 05:00），
+ *  此前被「周末一律关闭」整体拦掉，导致周五晚全程误判收盘、股价/异动提醒失效。 */
 function usMaybe(d) {
-  if (!isWeekday(d)) return false;
   const m = minutesOfDay(d);
+  const day = d.getDay();
+  if (day === 6) return m < 300; // 周六 00:00–05:00：美股周五晚盘，放行
+  if (day === 0) return false;   // 周日：美股休市
   return m >= 1230 || m < 300;
 }
 
@@ -60,7 +64,7 @@ function suggestedInterval(phase, userInterval, adaptiveSlow) {
     case 'open': return adaptiveSlow ? 60000 : userInterval;
     case 'auction': return Math.min(userInterval, 5000);
     case 'lunch': return 30000;
-    default: return 60000; // closed：心跳，兼做交易日翻转检测
+    default: return 900000; // closed：15 分钟低频心跳（兼做交易日翻转检测）；收盘后 10 分钟的 60s 过渡见 orchestrator
   }
 }
 

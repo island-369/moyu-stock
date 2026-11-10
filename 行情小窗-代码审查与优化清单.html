@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>行情小窗 · 代码审查与优化清单</title>
+<style>
+  :root {
+    --bg: #f7f7f4;
+    --ink: #191b1e;
+    --ink-2: #4b5157;
+    --ink-3: #7a828a;
+    --rule: #d9d9d3;
+    --rule-soft: #e7e7e1;
+    --accent: #0e6b64;
+    --code-bg: #f0f0ea;
+    --sev-hi: #b3362b;
+    --sev-mid: #946200;
+    --sev-low: #5c6470;
+    --ok: #2f6b3f;
+    --sans: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+    --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { -webkit-font-smoothing: antialiased; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.62;
+  }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(14,107,100,.35); }
+  a:hover { border-bottom-color: var(--accent); }
+
+  .frame { max-width: 1240px; margin: 0 auto; padding: 0 28px; display: flex; gap: 44px; }
+  .toc-col { width: 196px; flex: none; }
+  .main-col { flex: 1; min-width: 0; max-width: 900px; }
+
+  /* ---------- 封面 ---------- */
+  .cover { padding: 84px 0 52px; border-bottom: 1px solid var(--rule); }
+  .kicker {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--accent); margin-bottom: 22px;
+  }
+  .cover h1 { font-size: 40px; font-weight: 600; line-height: 1.16; letter-spacing: -.015em; }
+  .cover .sub { margin-top: 14px; font-size: 17px; color: var(--ink-2); font-weight: 400; }
+  .cover-meta {
+    margin-top: 34px; padding-top: 18px; border-top: 1px solid var(--rule);
+    display: flex; flex-wrap: wrap; gap: 10px 34px;
+    font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+  }
+  .cover-meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---------- 目录 ---------- */
+  .toc { position: sticky; top: 0; padding: 66px 0 40px; align-self: flex-start; }
+  .toc-title {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--ink-3); margin-bottom: 14px;
+  }
+  .toc a {
+    display: block; padding: 5px 0; font-size: 13px; color: var(--ink-2);
+    border-bottom: none; line-height: 1.45;
+  }
+  .toc a:hover { color: var(--ink); }
+  .toc .no { font-family: var(--mono); font-size: 11px; color: var(--ink-3); margin-right: 8px; }
+
+  /* ---------- 章节 ---------- */
+  section chap { display: block; }
+  .chap { padding: 58px 0 18px; border-bottom: 1px solid var(--rule); }
+  .chap-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 26px; }
+  .chap-no { font-family: var(--mono); font-size: 13px; color: var(--ink-3); }
+  .chap h2 { font-size: 25px; font-weight: 600; letter-spacing: -.01em; }
+  .chap-lede { font-size: 15.5px; color: var(--ink-2); max-width: 68ch; margin-bottom: 26px; }
+
+  h3 { font-size: 17px; font-weight: 600; margin: 34px 0 12px; }
+  h3 .secno { font-family: var(--mono); font-size: 13px; color: var(--ink-3); font-weight: 400; margin-right: 10px; }
+  p { max-width: 72ch; margin-bottom: 13px; }
+  p.wide { max-width: none; }
+  ul.plain { list-style: none; max-width: 72ch; margin-bottom: 13px; }
+  ul.plain li { padding-left: 16px; position: relative; margin-bottom: 7px; }
+  ul.plain li::before { content: ""; position: absolute; left: 0; top: .68em; width: 6px; height: 1px; background: var(--ink-3); }
+
+  /* 缺陷条目 */
+  .finding { border-top: 1px solid var(--rule-soft); padding: 22px 0 8px; }
+  .finding-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .fid { font-family: var(--mono); font-size: 13px; color: var(--ink); font-weight: 500; }
+  .sev {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase;
+    padding: 2px 8px 1px; border: 1px solid var(--rule); border-radius: 3px; color: var(--sev-low);
+  }
+  .sev.hi { color: var(--sev-hi); border-color: rgba(179,54,43,.4); }
+  .sev.mid { color: var(--sev-mid); border-color: rgba(148,98,0,.4); }
+  .finding h4 { font-size: 16.5px; font-weight: 600; flex: 1 1 100%; margin: 0 0 8px; line-height: 1.4; }
+  .finding p, .finding ul.plain { margin-bottom: 11px; }
+  .loc { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+  .loc b { color: var(--ink-2); font-weight: 500; }
+
+  code { font-family: var(--mono); font-size: .88em; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--rule-soft); }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--rule-soft); border-radius: 3px;
+    padding: 13px 16px; overflow-x: auto; margin: 12px 0 16px; max-width: none;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: 12.5px; line-height: 1.55; color: var(--ink); }
+  pre .cm { color: var(--ink-3); }
+
+  /* 表格 */
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 20px; font-size: 13.5px; }
+  th {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 500; text-align: left; padding: 7px 12px 7px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  td { padding: 8px 12px 8px 0; border-bottom: 1px solid var(--rule-soft); vertical-align: top; line-height: 1.5; }
+  td.mono, .mono { font-family: var(--mono); font-size: 12.5px; }
+  .st { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  .st.open { color: var(--sev-hi); }
+  .st.done { color: var(--ok); }
+  .st.part { color: var(--sev-mid); }
+
+  /* 结论块 */
+  .verdict { border: 1px solid var(--rule); border-radius: 3px; padding: 20px 24px; margin: 26px 0; }
+  .verdict .vt { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 10px; }
+  .verdict p { margin-bottom: 8px; }
+  .verdict p:last-child { margin-bottom: 0; }
+
+  .colophon { padding: 46px 0 90px; font-size: 13px; color: var(--ink-3); }
+  .colophon .vt { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 12px; color: var(--ink-3); }
+  .colophon p { max-width: 76ch; margin-bottom: 9px; }
+
+  @media (max-width: 1080px) {
+    .toc-col { display: none; }
+    .frame { display: block; }
+    .main-col { max-width: none; }
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+
+  <nav class="toc-col">
+    <div class="toc">
+      <div class="toc-title">目录</div>
+      <a href="#s0"><span class="no">00</span>结论先行</a>
+      <a href="#s1"><span class="no">01</span>新发现缺陷（9 项）</a>
+      <a href="#s2"><span class="no">02</span>上轮建议落地核对</a>
+      <a href="#s3"><span class="no">03</span>功能与体验增量</a>
+      <a href="#s4"><span class="no">04</span>代码整理与工程化</a>
+      <a href="#s5"><span class="no">05</span>建议落地顺序</a>
+      <a href="#colophon"><span class="no">—</span>审查方法与范围</a>
+    </div>
+  </nav>
+
+  <main class="main-col">
+
+    <!-- ============ 封面 ============ -->
+    <header class="cover">
+      <div class="kicker">Code Review · moyu-stock · Round 2</div>
+      <h1>行情小窗 · 代码审查<br>与优化清单</h1>
+      <div class="sub">功能补强 · 缺陷修复 · 使用体验 · 代码规范整理</div>
+      <div class="cover-meta">
+        <span><b>对象</b> stock-widget v0.1.0 · commit 3cab208</span>
+        <span><b>规模</b> 约 7,200 行源码</span>
+        <span><b>单测基线</b> 60 / 60 通过</span>
+        <span><b>日期</b> 2026-10-17</span>
+      </div>
+    </header>
+
+    <!-- ============ 00 结论先行 ============ -->
+    <section class="chap" id="s0">
+      <div class="chap-head"><span class="chap-no">00</span><h2>结论先行</h2></div>
+      <p class="chap-lede">这是对该项目的第二轮全量审查。上一轮《隐蔽性与效率优化建议》审查的是 4,453 行的版本；此后唯一一次功能提交（列表滚动轮播、按分组记忆排序、个股股价提醒、接口风控应对）把代码量推到了约 7,200 行。本轮通读全部源码并交叉验证，重点回答三件事：新代码引入了什么问题、上轮建议落地了多少、代码本身需要如何整理。</p>
+
+      <div class="verdict">
+        <div class="vt">总体判断</div>
+        <p><b>骨架是健康的，且「效率」侧在上轮审查后补强明显</b>：东财主源的同轮快重试、备源滞回（最短停留 60s + 探活退避 + 观察期）、分时双源兜底都有针对性单测覆盖（测试总数 43 → 60，全部通过）。分层（core 零 Electron 依赖 / 渲染层零网络 / IPC 白名单收口 / 原子写存储 + .bak 回滚）是这个代码库最值钱的资产，后续所有改动都应守住。</p>
+        <p><b>但上轮 5 项 P0（隐蔽性侧）全部未落地</b>：⌘Tab/Dock 隐身联动、通知静默化、提醒口径修正、指数异动提醒、非交易时段停轮询——一项都没动。最近一次提交是纯功能向的，与上轮建议的优先级方向正好错开。</p>
+        <p><b>本轮新发现 9 个真实缺陷</b>：2 项高（美股自选周五晚提醒全灭；备源自身故障时永久卡死回不到主源）、3 项中（渲染层崩溃重建后状态失联；会议模式中按老板键反而弹出窗口；设置窗失焦即藏打断复制粘贴工作流）、4 项低。另有 12 项代码整理与工程化事项，其中最迫切的是把 976 行的 <span class="mono">index.js</span> 拆掉。</p>
+      </div>
+
+      <p><b>最值得先做的三件事</b>（合计约半天）：A1 修 <span class="mono">usMaybe()</span> 的周末判定、A2 在失败分支补探活调用、A3 把 blur/穿透恢复收进 <span class="mono">wireMainWindow()</span>。随后用约一天补齐上轮 P0-1～P0-5（清单见第 2 章，改法在上轮文档里已经写好，此处只核对状态）。</p>
+    </section>
+
+    <!-- ============ 01 新发现缺陷 ============ -->
+    <section class="chap" id="s1">
+      <div class="chap-head"><span class="chap-no">01</span><h2>新发现缺陷</h2></div>
+      <p class="chap-lede">以下 9 项均为上轮报告未覆盖、本轮通读新代码时发现的真实缺陷，按严重度排列。每项给出影响、根因与修法；行号以当前 commit 为准。A 股纯自选用户几乎不受 A1/A2 影响，但持仓含美股（项目明确支持 <span class="mono">105.AAPL</span> 一类 secid）时它们是硬故障。</p>
+
+      <div class="finding">
+        <div class="finding-head"><span class="fid">A1</span><span class="sev hi">高</span></div>
+        <h4>美股自选周五晚全程「已收盘」：股价提醒与异动提醒全灭</h4>
+        <p class="loc">根因 <b>src/core/session.js:36</b> <b>usMaybe()</b>，影响 orchestrator 的 phase 判定与全部提醒链路</p>
+        <p>美股用「北京宽窗口 20:30–05:00」判定交易时段，但入口先做了 <code>if (!isWeekday(d)) return false</code>。北京<b>周六 00:00–05:00</b> 恰好是美股周五晚盘（冬令时到 04:00、夏令时到 05:00），却被周末判断拦下，phase 落到 <code>closed</code>。后果链：<code>checkAlerts()</code> 与 <code>checkPriceRules()</code> 都要求 <code>phase === 'open' || 'auction'</code> 才检查——于是自选里的美股在周五晚上<b>涨破任何阈值都不会提醒</b>，界面状态条也误标「已收盘」，刷新降为 60s 心跳。</p>
+        <p>这对「异动找你，不用盯」的核心承诺是直接违约：恰恰是美股时段（晚上加班时）最需要提醒的时候，提醒是死的。</p>
+        <pre><code>function usMaybe(d) {
+  const m = minutesOfDay(d);
+  if (d.getDay() === 6) return m &lt; 300;   // 周六凌晨 = 美股周五晚盘，放行
+  if (!isWeekday(d)) return false;          // 周日（美股休市）维持关闭
+  return m &gt;= 1230 || m &lt; 300;
+}</code></pre>
+        <p>修法如上（宽窗口哲学不变，误开由自适应降速兜底，与现有设计一致）。修完应在 <span class="mono">tests/run.js</span> 补「周六 01:00 含 US → open」的边界用例——这正是当前测试空白让 bug 溜过去的地方（见 D7）。</p>
+      </div>
+
+      <div class="finding">
+        <div class="finding-head"><span class="fid">A2</span><span class="sev hi">高</span></div>
+        <h4>备源自身故障时永久卡死：失败分支没有任何回主源的路径</h4>
+        <p class="loc">根因 <b>src/main/orchestrator.js</b> <b>tickQuote() 失败分支</b>；<b>recoverMain()</b> 仅在 L239 成功分支末尾被调用</p>
+        <p>探活主源的 <code>recoverMain()</code> 只挂在 tickQuote <b>成功</b>路径的末尾（「备源供数正常时按退避间隔探活」）。一旦切到腾讯后腾讯自己也持续失败，失败分支只有 <code>backoffDelay()</code> 退避重试，<b>永远不会探活东财</b>——哪怕东财早已恢复。用户看到的是永久「网络异常 · 数据为 hh:mm 快照」，只能重启应用。</p>
+        <p>触发条件并不苛刻：腾讯备源不支持美股（<code>toTencentSymbol</code> 对 <code>105.*</code> 返回 null，整表空响应），而 <code>fetchWithRetry()</code> 把「空 map」判定为失败。自选<b>全部或以美股为主</b>时，东财连续 3 个 tick 撞上坏窗口切备源后，即进入「腾讯永远空响应 → 永远失败 → 永不探活」的死循环。A 股用户因为腾讯能正常供数会走成功分支，不受影响。</p>
+        <p>修法一行：失败分支末尾补 <code>if (this.source === 'tencent') this.recoverMain(secids).catch(...)</code>；或更彻底——失败时直接对东财做一次 <code>fetchWithRetry</code> 尝试，成功即切回并进入观察期。</p>
+      </div>
+
+      <div class="finding">
+        <div class="finding-head"><span class="fid">A3</span><span class="sev mid">中</span></div>
+        <h4>渲染进程崩溃重建后：blur 收弹层失效、穿透状态与实际行为相反、无重建上限</h4>
+        <p class="loc">根因 <b>src/main/index.js:897–913</b> <b>render-process-gone</b> 处理器</p>
+        <ul class="plain">
+          <li><b>blur 监听丢失</b>：<code>mainWin.on('blur', …)</code> 是在 <span class="mono">main()</span> 里单独挂的，崩溃处理器只重新调用了 <code>wireMainWindow()</code>，重建后的窗口不再响应失焦收弹层（光标监视还在，但行为退化）。</li>
+          <li><b>穿透状态反向</b>：穿透开启时崩溃 → 新窗口没有重新 <code>setIgnoreMouseEvents(true)</code>；渲染层 boot 时从 <code>app:boot</code> 拿到 <code>penetrate=true</code>，黄条显示「鼠标穿透中 · ⌥⇧X 恢复」，但窗口实际<b>可点击</b>——提示与事实相反。</li>
+          <li><b>无重建上限</b>：若渲染层因脏数据反复崩溃，会无限 destroy → create 循环，窗口闪烁不可用。</li>
+        </ul>
+        <p>修法：把 blur 接线与 <code>penetrate</code> 的重放（<code>mainWin.setIgnoreMouseEvents(penetrate, { forward: true })</code>）都收进 <code>wireMainWindow()</code>；加「60s 内 3 次崩溃则退出并留日志」的熔断。</p>
+      </div>
+
+      <div class="finding">
+        <div class="finding-head"><span class="fid">A4</span><span class="sev mid">中</span></div>
+        <h4>会议模式中按老板键 = 把窗口弹回物理屏幕（反向暴露）</h4>
+        <p class="loc">根因 <b>src/main/index.js:135</b> <b>bossAction()</b> 可见性翻转逻辑</p>
+        <p>会议模式开启时窗口已隐藏。此时按 ⌥⇧H，<code>bossAction()</code> 走「不可见 → showMainWindow()」分支，窗口在<b>物理屏幕上重新出现</b>（防录屏只挡采集与共享，不挡站在旁边的肉眼）。用户的肌肉记忆是「老板来了按老板键」，结果在会议场景下按出来的反而是行情窗。代码里 <code>if (!meetingMode) bossHidden = false</code> 说明作者考虑过状态保持，但翻转显示本身与老板键语义冲突。</p>
+        <p>修法：<code>bossAction()</code> 入口处 <code>if (meetingMode) return;</code>（保持隐藏；需要看盘时用户应先退会议模式）。</p>
+      </div>
+
+      <div class="finding">
+        <div class="finding-head"><span class="fid">A5</span><span class="sev mid">中</span></div>
+        <h4>设置窗失焦即藏，打断「去别处复制 → 回来粘贴」的标准工作流</h4>
+        <p class="loc">根因 <b>src/main/window.js</b> <b>createOrShowSettingsWindow()</b> 的 blur 自动隐藏（400ms 保护窗只防打开瞬间的抢焦点）</p>
+        <p>导入持仓的用法是设置页明确引导的：「粘贴持仓与成本」。真实路径是：打开设置 → 切到券商 App / Excel 复制 → 切回来——<b>切走的瞬间设置窗就藏了</b>，回来得重新从托盘/⌘, 打开（内容还在，但流程被切断）。「从文件导入」同样受影响：文件选择对话框夺走焦点时窗口已隐藏，选完文件回到的是一个看不见的窗口。</p>
+        <p>这个 blur-hide 的安全收益其实很小：老板键的 <code>hideAuxWindows()</code> 已经覆盖了设置窗的紧急隐藏场景。建议直接移除 blur 自动隐藏，改为显式关闭（⌘W / 关闭按钮）；若保留，至少在「失焦目标是文件对话框」时豁免。</p>
+      </div>
+
+      <div class="finding">
+        <div class="finding-head"><span class="fid">A6</span><span class="sev low">低</span></div>
+        <h4>「仅看置顶」空态文案残留，后续清空列表时提示错误</h4>
+        <p class="loc">根因 <b>src/renderer/app.js:534–544</b> <b>renderRows()</b></p>
+        <p>置顶过滤无结果时会改写 <code>#empty .dim</code> 为「眼睛面板 → 关闭『仅看置顶』…」，但恢复默认文案的语句在 <code>if (starOnly)</code> 分支内——只有「过滤开着且有行」才执行。先经历过滤空态、之后清空全部自选时，空态副文案停留在置顶版，误导用户。修法：进入空态分支时无条件重置两句文案。</p>
+      </div>
+
+      <div class="finding">
+        <div class="finding-head"><span class="fid">A7</span><span class="sev low">低</span></div>
+        <h4>多显示器下，股价提醒弹窗被强行钳回主屏</h4>
+        <p class="loc">根因 <b>src/main/toast.js:44</b> <b>clampToScreen()</b> 只用 <code>screen.getPrimaryDisplay()</code></p>
+        <p>用户把提醒弹窗拖到副屏记忆位置后，下次弹出会被钳制回主屏底部——副屏办公（外接屏放行情）的场景完全不支持。修法：先 <code>screen.getDisplayMatching({ x, y, width: W, height: H })</code> 找到目标屏，再按该屏 bounds 钳制；默认位置同理用光标所在屏。</p>
+      </div>
+
+      <div class="finding">
+        <div class="finding-head"><span class="fid">A8</span><span class="sev low">低</span></div>
+        <h4>引导流程选「云端自选」后，第 2 步添加的股票石沉大海</h4>
+        <p class="loc">根因 <b>src/renderer/app.js</b> onboarding 步骤 2 与 <b>ipc.js</b> <b>app:list:add</b>（固定写 manualList）</p>
+        <p>首次引导选云端模式后，第 2 步「添加自选」的搜索与示例组合仍写入 <code>manualList</code>；登录成功后界面显示的是云分组，手动加的票不可见，也没有任何提示。用户会以为添加失败。修法：云端模式下第 2 步改为「去东财 App / 网页加自选即自动同步」的引导说明；或用户在此步实际添加时自动切回手动模式并说明。</p>
+      </div>
+
+      <div class="finding">
+        <div class="finding-head"><span class="fid">A9</span><span class="sev low">低</span></div>
+        <h4>「每日一次」去重键用 UTC 日期，翻转边界在本地 08:00 而非 00:00</h4>
+        <p class="loc">根因 <b>src/main/orchestrator.js:380 / 456</b> <code>new Date().toISOString().slice(0, 10)</code></p>
+        <p>北京 00:00–08:00 之间 UTC 日期比本地早一天。核对过现有各交易时段后确认实际影响接近零（A 股盘中、美股整场都不跨这个边界，收盘战报的 15:05 守卫也在窗外），属于语义卫生问题：哪天有人把时段扩到早盘前或夜盘商品，这里会以非常隐蔽的方式漏发。改本地日期一行的事：<code>toLocaleDateString('sv')</code>。</p>
+      </div>
+    </section>
+
+    <!-- ============ 02 上轮建议落地核对 ============ -->
+    <section class="chap" id="s2">
+      <div class="chap-head"><span class="chap-no">02</span><h2>上轮建议落地核对</h2></div>
+      <p class="chap-lede">逐条对照《行情小窗-隐蔽性与效率优化建议》与当前代码。结论：<b>隐蔽性侧的 P0 一项未动</b>；效率与功能侧（接口风控、分时双源、排序记忆、股价提醒、滚动轮播）在最近一次提交中大幅补强且有测试覆盖。下表只核对状态，改法不再重复——上轮文档对应章节已写清。</p>
+
+      <h3><span class="secno">2.1</span>P0 清单（当时估 1 天工作量）</h3>
+      <table>
+        <thead><tr><th style="width:64px">编号</th><th>建议</th><th style="width:70px">状态</th><th>当前代码证据</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">P0-1</td><td>隐身联动 Dock / ⌘Tab；应用名中性化</td><td class="st open">未修</td><td><span class="mono">bossAction()</span> 仍无 <span class="mono">app.dock</span> 操作；productName / 标题仍为「行情小窗」</td></tr>
+          <tr><td class="mono">P0-2</td><td>通知静默化（战报接入 style/lowKey、silent、默认档位）</td><td class="st open">未修</td><td><span class="mono">orch.on('summary')</span> 仍无条件弹含股票名横幅；三处 <span class="mono">new Notification</span> 均无 <span class="mono">silent</span>；<span class="mono">style</span> 默认仍是 <span class="mono">banner</span></td></tr>
+          <tr><td class="mono">P0-3</td><td>提醒口径（持仓按盈亏判断）+ 持仓金额与汇总</td><td class="st open">未修</td><td><span class="mono">checkAlerts()</span> 仍只读 <span class="mono">r.pct</span>；<span class="mono">qty</span> 仍存储后闲置（<span class="mono">buildRows</span> 不消费）</td></tr>
+          <tr><td class="mono">P0-4</td><td>大盘指数异动提醒（独立阈值 + 信号位）</td><td class="st open">未修</td><td><span class="mono">checkAlerts()</span> 仍只遍历个股 rows</td></tr>
+          <tr><td class="mono">P0-5</td><td>非交易时段停轮询 / 隐藏暂停</td><td class="st open">未修</td><td><span class="mono">suggestedInterval('closed')</span> 仍固定 60s 心跳；无 <span class="mono">pauseWhenHidden</span></td></tr>
+        </tbody>
+      </table>
+
+      <h3><span class="secno">2.2</span>其余暴露面与工程项抽查</h3>
+      <table>
+        <thead><tr><th style="width:64px">编号</th><th>建议</th><th style="width:70px">状态</th><th>备注</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">E4</td><td>通知授权弹窗时机推后</td><td class="st open">未修</td><td>首条异动即触发系统授权框（依赖 P0-2 的默认档位调整）</td></tr>
+          <tr><td class="mono">E12</td><td>settings / snapshot 明文持仓加密</td><td class="st open">未修</td><td>仍为明文 JSON</td></tr>
+          <tr><td class="mono">工程</td><td>schemaVersion 统一迁移</td><td class="st open">未修</td><td>且新增第 4 处散置迁移（shortcuts 补齐），见 D6</td></tr>
+          <tr><td class="mono">工程</td><td>打包签名 / 公证 / universal</td><td class="st open">未修</td><td>仍仅 arm64 dmg、无 identity 配置；LSUIElement 与 dockIcon 默认 true 的语义冲突仍在（D9）</td></tr>
+          <tr><td class="mono">效率</td><td>接口风控应对（上轮未提，本轮新增观察）</td><td class="st done">已落地</td><td>同轮快重试 + 备源滞回 + 探活退避 + 观察期，配套 [7][8] 共 12 项单测</td></tr>
+          <tr><td class="mono">功能</td><td>按分组记忆排序 / 股价提醒 / 滚动轮播</td><td class="st done">已落地</td><td>配套 [9][10] 共 5 项单测；股价提醒的重新布防语义设计得当</td></tr>
+        </tbody>
+      </table>
+
+      <p><b>优先级建议不变且更紧迫了</b>：股价提醒（新功能）让「通知」这条暴露路径的使用频率变高了——它是屏上弹窗不受影响，但收盘战报与异动横幅仍是旧的裸奔口径。P0-1 + P0-2 半天内可以做完，建议插在所有新功能之前。</p>
+    </section>
+
+    <!-- ============ 03 功能与体验增量 ============ -->
+    <section class="chap" id="s3">
+      <div class="chap-head"><span class="chap-no">03</span><h2>功能与体验增量</h2></div>
+      <p class="chap-lede">只列本轮新识别的点；上轮 P1/P2（鼠标热区急隐、悬停变清晰、伪装模式、菜单栏信号档、键盘流扩容等）仍然有效，不在此重复。</p>
+
+      <h3><span class="secno">3.1</span>emitState 全量广播按签名门控（性能）</h3>
+      <p class="wide"><span class="mono">tickQuote()</span> 每 5 秒成功都 <code>emitState()</code> 全量 state——「全部合并视图」下（文档提过 422 只）每 tick 都把几百行 × 十几个字段序列化后 IPC 广播给所有窗口，随后渲染层全量 <code>render()</code>。而签名 <code>signature</code> 本来就已经算出来了（目前只用于自适应降速）。改法：签名与上次相同 → 只广播轻量 <code>{ status }</code> 补丁，渲染层合并；全量 state 只在签名变化或分组切换时发。同理渲染层可在 <code>document.hidden</code> 时暂存 state、可见时一次性渲染（隐藏窗口期间每 5 秒的 DOM 更新全部是白做功）。</p>
+
+      <h3><span class="secno">3.2</span>停轮询时的「数据时间」标记（配合上轮 P0-5）</h3>
+      <p>做 P0-5（非交易时段停轮询 / 隐藏暂停）时，菜单栏数字会停在收盘值。建议菜单栏 title 与迷你条在数据超过 N 分钟未更新时追加一个中性符号（如 <span class="mono">·</span> 变 <span class="mono">:</span>），避免把陈旧数据误读成实时——上轮文档已点出这个坑，这里补一个具体且零暴露的实现位。</p>
+
+      <h3><span class="secno">3.3</span>持仓金额与汇总：把闲置的 qty 接进 buildRows</h3>
+      <p>上轮 P0-3 的现状表已核实：qty 存了但 <code>buildRows()</code> 不消费。接上后可做三件事：行内副标显示盈亏金额 <code>(price − cost) × qty</code>；持仓分组状态条显示总市值 / 总盈亏 / 总盈亏率；分时图画成本线（cost 已在 rows 里）。金额类信息暴露度高，建议默认关闭、低调与单色模式下强制隐藏（与上轮口径一致）。</p>
+
+      <h3><span class="secno">3.4</span>量能字段与「放量异动」双确认</h3>
+      <p>请求字段只有价格族（f1–f4/f12–f14/f18），无量能。补 f5（量）/f6（额）后可把异动提醒升级为「价格 + 量能」双确认，明显降噪；行内可加一个量比小标记。上轮 P2-3 已提，此处确认仍未做，且新加的股价提醒同样只有价格维度。</p>
+
+      <h3><span class="secno">3.5</span>分组切换的键盘档位与「排序中拖拽禁用」提示</h3>
+      <p>非默认排序时禁拖拽已实现，但界面只有标题旁一个 <span class="mono">⇅</span> 标记；拖拽失败时用户得不到解释。建议 dragstart 被排序拦截时弹一次黄条「排序中，拖拽已禁用（切回默认排序可调整顺序）」。顺带：⌥⇧←/→ 切分组很好用，但窗口内 <code>[</code> <code>]</code> 快捷档（上轮 P1-7）仍缺。</p>
+    </section>
+
+    <!-- ============ 04 代码整理与工程化 ============ -->
+    <section class="chap" id="s4">
+      <div class="chap-head"><span class="chap-no">04</span><h2>代码整理与工程化</h2></div>
+      <p class="chap-lede">这一章不改行为、只降复杂度。当前最大的结构性风险：状态散落 + 逻辑副本 + 死代码——三者叠加会让下一次功能提交的成本明显上升。</p>
+
+      <h3><span class="secno">4.1</span>D1 · 拆分 976 行的 index.js</h3>
+      <p class="wide"><span class="mono">src/main/index.js</span> 承载了生命周期、单实例锁、冒烟模式之外，还有 <b>12 个模块级可变状态</b>（penetrate / bossHidden / meetingMode / preMeeting / missedAlerts / alertSignal / lastProgSize / preMiniSize / popExpandHeight / resizeSession / popupWatch / autoscrollOn）和至少四块可以独立的逻辑。建议拆出：</p>
+      <table>
+        <thead><tr><th style="width:150px">新模块</th><th>收编内容</th><th style="width:170px">带走的状态</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">window-sizing.js</td><td>applySize / expandForPopup / setHeight / setWidth / start·stopResizeSession / 弹层监视</td><td>lastProgSize、preMiniSize、popExpandHeight、resizeSession、popupWatch</td></tr>
+          <tr><td class="mono">stealth.js</td><td>bossAction / setMeetingMode / alertsPaused / pushMissed·flush / setAlertSignal / applyContentProtection</td><td>bossHidden、meetingMode、preMeeting、missedAlerts、alertSignal</td></tr>
+          <tr><td class="mono">migrations.js</td><td>3 个一次性布尔迁移 + shortcuts 补齐（见 D6）</td><td>—</td></tr>
+          <tr><td class="mono">smoke.js</td><td>runSmoke 与 SMOKE 常量判定</td><td>—</td></tr>
+        </tbody>
+      </table>
+      <p>拆分的同时顺手解决 A3（blur/穿透重放进 wireMainWindow）与 A5（会议/老板键语义收进 stealth.js 一处维护）。</p>
+
+      <h3><span class="secno">4.2</span>D2 · 排序归一化三处副本，改为写入时归一</h3>
+      <p class="wide"><code>normSort()</code> 在 <span class="mono">renderer/app.js:413</span> 与 <span class="mono">main/index.js:580</span> 各有一份，<span class="mono">renderer/settings.js</span> 还有第三份内联变体（<code>sortMode === 'pct' ? 'pct-desc' : …</code>）；渲染层 <code>guessMarket()</code> 又与 <code>code-parser</code> 的号段规则重复。根因是「存量值可能不规范」的防御散在读侧。改法：在 <span class="mono">Store.set()</span>（或 IPC <span class="mono">app:settings:set</span> 入口）做一次 sortMode 归一化，保证落盘值永远规范，然后删掉全部三处读侧副本。guessMarket 若要跨层复用，建一个无 require 的纯 JS 共享文件（渲染层 &lt;script&gt; 可加载、Node 可 require），比复制粘贴耐久。</p>
+
+      <h3><span class="secno">4.3</span>D3 · 死代码清理（4 处）</h3>
+      <ul class="plain">
+        <li><span class="mono">ipc.js</span> 的 <code>app:list:star</code> handler + <span class="mono">preload.js</span> 白名单同名项：无任何调用方（置顶走右键菜单的 <code>ctx.setStar</code> 路径）。</li>
+        <li><span class="mono">constants.js</span> 的 <code>DEMO_LIST</code>：已导出但无人使用；渲染层 <code>addDemo()</code> 硬编码了自己的三只列表，两者还不一致（2 只 vs 3 只）。二者留一。</li>
+        <li><span class="mono">tencent.js</span> 返回的 <code>market</code> / <code>marketNum</code> 字段：无消费方（buildRows 用条目自身的 market），且对北交所会给出错误的 'SZ' 标签——删掉免得将来误用。</li>
+        <li><span class="mono">tests/run.js:15</span>：<code>const { parse: txParse } = { parse: null } || {};</code> 遗留残句。</li>
+      </ul>
+
+      <h3><span class="secno">4.4</span>D4 · 双 broadcast 实现语义分叉</h3>
+      <p><span class="mono">index.js</span> 的 <code>broadcast()</code> 覆盖主窗 + 登录窗 + 设置窗；<span class="mono">ipc.js</span> 挂到 <code>ctx.broadcast</code> 的实现只覆盖主窗 + 设置窗。同名不同义，IPC 路径触发的 <code>evt:notice</code> 永远到不了登录窗。统一成一处（建议 ipc.js 直接复用 index.js 的实现）。</p>
+
+      <h3><span class="secno">4.5</span>D5 · 文档数字漂移</h3>
+      <p>两份 README 均写「核心层 51 项单元测试」，实际当前为 <b>60 项</b>（本轮实测 <span class="mono">npm test</span>：60 通过 0 失败；上轮报告时为 43）。建议在 README 改为不写死数字（「见 <span class="mono">npm test</span> 输出」）或随提交更新。</p>
+
+      <h3><span class="secno">4.6</span>D6 · 迁移机制：4 处散置 → schemaVersion 迁移表</h3>
+      <p><span class="mono">main()</span> 启动段现有 dockMigrated / activeGroupMigrated / pulseMigrated 三个一次性布尔 + shortcuts 补齐，共四段防御性迁移代码。引入 <code>schemaVersion</code> 与有序迁移列表（每个迁移一个函数，跑过即升版本），第 5、6 个迁移出现时不用再堆布尔标记。上轮已建议，本轮新增的 shortcuts 补齐让这件事更必要。</p>
+
+      <h3><span class="secno">4.7</span>D7 · 测试空白：恰好是本轮两个高危 bug 的所在地</h3>
+      <ul class="plain">
+        <li><b>session 边界</b>：<code>usMaybe</code> 的周末/凌晨窗口无任何用例——A1 正是从这里溜过去的。补：周六 01:00 含 US → open、周日 21:30 含 US → closed、周一 02:00 含 US → open。</li>
+        <li><b>备源故障路径</b>：现有用例覆盖「腾讯正常供数时的滞回」，没有「腾讯持续失败」的用例——A2 的死循环因此不可见。补：source=tencent 且 fetch 全挂时，断言会尝试东财探活。</li>
+        <li><b>checkAlerts / maybeSummary</b>：phase 门控、每日去重键、15:05 窗口完全无覆盖（上轮也点过）。</li>
+        <li><b>validBounds</b>：多显示器容差逻辑无覆盖。</li>
+      </ul>
+
+      <h3><span class="secno">4.8</span>D8–D12 · 其余工程项</h3>
+      <table>
+        <thead><tr><th style="width:64px">编号</th><th>事项</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">D8</td><td>lint 与 CI 缺失</td><td>package.json 仅 start/test/icon/smoke/dist。加 eslint（配合 <span class="mono">node --check</span> 兜底）+ GitHub Actions（mac runner 可连 smoke）；提交前 lint 能拦住死代码与未用变量这类 D3 问题</td></tr>
+          <tr><td class="mono">D9</td><td>打包配置矛盾</td><td>electron-builder.yml 的 <code>LSUIElement: true</code>（bundle 默认无 Dock）与运行时 <code>dockIcon</code> 默认 true + 启动无条件 <code>dock.show()</code> 自愈互相打架——那个自愈 hack 正是这对矛盾逼出来的。二选一定语义；同时补签名/公证与 x64 或 universal 目标</td></tr>
+          <tr><td class="mono">D10</td><td>sandbox 可收紧</td><td>三个窗口的 webPreferences 均 <code>sandbox: false</code>，但 preload 只用了 contextBridge / ipcRenderer——sandbox:true 应当兼容，值得一试（渲染层安全边界再收一档）</td></tr>
+          <tr><td class="mono">D11</td><td>渲染层缓存无清理</td><td><code>prevPrices</code> / <code>sparkCache</code> 对已删除股票的键不回收，长挂机 + 频繁增删自选会缓慢增长；主进程 <code>trendsCache</code> 有 80 条上限（好），渲染层对齐即可</td></tr>
+          <tr><td class="mono">D12</td><td>Store.set 恒同步写盘</td><td>toastPos 拖动结束、置顶切换等高频小写全走同步 fs；已有 <code>saveSoon()</code> 但 set() 不经它。给 set 加 debounce 选项或对高频调用点改用 saveSoon</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ============ 05 建议落地顺序 ============ -->
+    <section class="chap" id="s5">
+      <div class="chap-head"><span class="chap-no">05</span><h2>建议落地顺序</h2></div>
+      <p class="chap-lede">按「先止血、再补欠账、后整理」排。工作量是保守估计，以熟悉代码的作者为准。</p>
+      <table>
+        <thead><tr><th style="width:110px">批次</th><th>内容</th><th style="width:90px">工作量</th><th>验收</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">第 1 批 · 止血</td><td>A1 usMaybe 周六放行 + 边界用例；A2 失败分支补探活 + 用例；A3 blur/穿透重放与崩溃熔断；A4 会议中老板键不翻转</td><td class="mono">~0.5 天</td><td>新增单测全绿；美股自选周五晚能收到提醒；手动 kill 渲染进程后穿透/失焦行为一致</td></tr>
+          <tr><td class="mono">第 2 批 · 补欠账</td><td>上轮 P0-1～P0-5（改法见上轮文档 §2）+ A5 设置窗去 blur-hide + A6/A7/A8/A9</td><td class="mono">~1 天</td><td>上轮验收法：⌘Tab / 通知中心 / 手机拍屏三关全过</td></tr>
+          <tr><td class="mono">第 3 批 · 整理</td><td>D1 拆 index.js、D2 归一化收口、D3 死代码、D4 broadcast 合一、D6 schemaVersion、D5 README 数字</td><td class="mono">~1 天</td><td>纯重构：npm test 60 项 + smoke 前后一致，无行为变化</td></tr>
+          <tr><td class="mono">第 4 批 · 加固</td><td>D7 测试空白补齐、D8 lint+CI、D9 打包（签名/公证/universal、LSUIElement 定语义）、D10 sandbox</td><td class="mono">~1–2 天</td><td>CI 绿；分发 dmg 在干净机器上可打开</td></tr>
+        </tbody>
+      </table>
+      <p><b>一个原则</b>：第 3 批之前别再叠加新功能。当前 12 个模块级可变状态 + 三份排序副本的结构下，每个新功能都在付「理解成本税」；先把地基收拢，后面的功能（持仓金额、量能提醒、伪装模式）都会更便宜。</p>
+    </section>
+
+    <!-- ============ colophon ============ -->
+    <footer class="colophon" id="colophon">
+      <div class="vt">审查方法与范围</div>
+      <p>逐文件通读 stock-widget 全部源码（main 9 文件 / core 9 文件 / store / renderer 5 文件 / shared / tests / tools / 两份 README / electron-builder.yml），并对可疑点做交叉验证（grep 定位行号、核对调用方、追状态流）。交付前实测 <span class="mono">npm test</span>：60 项通过、0 项失败，作为本轮基线。</p>
+      <p>与本报告对照的上一轮审查为《行情小窗-隐蔽性与效率优化建议.md》（审查对象 4,453 行版本，43 项单测）。本报告不重复其仍有效的建议正文，只核对落地状态。</p>
+      <p>审查过程中未修改任何代码。文中行号以 commit 3cab208 为准，重构后以函数名定位为准。</p>
+      <p style="margin-top:18px; font-family: var(--mono); font-size: 11.5px;">2026-10-17 · moyu-stock v0.1.0 · ~7,200 LOC · tests 60/60</p>
+    </footer>
+
+  </main>
+</div>
+</body>
+</html>

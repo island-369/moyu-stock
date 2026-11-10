@@ -6,31 +6,14 @@ const { BrowserWindow, screen } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { ROOT } = require('../shared/constants');
+const { validBounds } = require('../shared/bounds');
 
 const PRELOAD = path.join(ROOT, 'src/main/preload.js');
 
-/** 校验记忆的位置是否还落在某个屏幕内（防接/拔显示器后跑丢） */
-function validBounds(bounds) {
-  if (!bounds || typeof bounds.x !== 'number' || typeof bounds.y !== 'number') return null;
-  const displays = screen.getAllDisplays();
-  const visible = displays.some((d) => {
-    const a = d.workArea;
-    // 四边都须在屏幕内（含 60px 容差）—— 只查左上角会让右半截窗口整个伸出屏外，数据列全部不可见
-    return bounds.x >= a.x - 60 && bounds.y >= a.y - 60 &&
-      bounds.x + (bounds.width || 360) <= a.x + a.width + 60 &&
-      bounds.y + (bounds.height || 520) <= a.y + a.height + 60;
-  });
-  if (!visible) return null;
-  return {
-    ...bounds,
-    width: Math.max(210, Math.min(bounds.width || 360, 1200)),
-    height: Math.max(92, Math.min(bounds.height || 520, 940)),
-  };
-}
-
 function createMainWindow(settings, log, options = {}) {
   const s = settings.get();
-  const remembered = validBounds(s.window.bounds);
+  // 位置校验抽为纯函数（shared/bounds.js，可单测多显示器容差）
+  const remembered = validBounds(s.window.bounds, screen.getAllDisplays());
   const opts = {
     width: (remembered && remembered.width) || 360,
     height: (remembered && remembered.height) || 520,
@@ -51,7 +34,7 @@ function createMainWindow(settings, log, options = {}) {
       preload: PRELOAD,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true, // preload 只用 contextBridge/ipcRenderer，沙箱可用即收紧（D10）
     },
   };
   // macOS：非激活面板——应用不在前台时也能直接拖边缩放/点击交互，且不抢工作应用焦点
@@ -142,13 +125,12 @@ function createOrShowSettingsWindow() {
   if (settingsWin && !settingsWin.isDestroyed()) {
     settingsWin.show();
     settingsWin.focus();
-    settingsWin._shownAt = Date.now();
     notifySettingsVis(true);
     return settingsWin;
   }
   settingsWin = new BrowserWindow({
     width: 500,
-    height: 660,
+    height: 700, // 新增提醒口径/指数阈值/隐藏暂停等控件后加高，减少滚动（body 本身可滚）
     // 标题中性化：调度中心/窗口列表里只看到「设置」，不出现应用名
     title: '设置',
     autoHideMenuBar: true,
@@ -158,18 +140,14 @@ function createOrShowSettingsWindow() {
       preload: PRELOAD,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
   settingsWin.loadFile(path.join(ROOT, 'src/renderer/settings.html'));
-  settingsWin.once('ready-to-show', () => { settingsWin._shownAt = Date.now(); settingsWin.show(); notifySettingsVis(true); });
-  // 点旁边（窗口失焦）自动收起：摸鱼场景下和主窗弹层行为一致
-  settingsWin.on('blur', () => {
-    if (!settingsWin || settingsWin.isDestroyed() || settingsWin.isVisible() === false) return;
-    if (Date.now() - (settingsWin._shownAt || 0) < 400) return; // 刚打开时不收，避免抢焦点瞬间被吞
-    settingsWin.hide();
-    notifySettingsVis(false);
-  });
+  settingsWin.once('ready-to-show', () => { settingsWin.show(); notifySettingsVis(true); });
+  // 不再「失焦即藏」（2026-10 审查 A5）：那会打断「去券商 App/Excel 复制 → 回来粘贴」的
+  // 标准导入流程（切走的瞬间窗口就没了）。紧急隐藏由老板键 hideAuxWindows 覆盖；
+  // 日常收起：Esc（settings.js）、关闭按钮、点主窗（app:settings:hide）。
   settingsWin.on('hide', () => notifySettingsVis(false));
   settingsWin.on('closed', () => { settingsWin = null; notifySettingsVis(false); });
   return settingsWin;

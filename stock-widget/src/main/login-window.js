@@ -59,7 +59,7 @@ function openLoginWindow(opts) {
       partition: 'persist:em-login',
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true, // 东财网页按普通浏览器沙箱跑（D10），会话仍在 persist 分区
     },
   });
 

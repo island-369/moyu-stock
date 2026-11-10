@@ -61,8 +61,6 @@ async function fetchQuotes(secids, opts = {}) {
       const prevClose = num(f[4]);
       out.set(secid, {
         secid,
-        market: secid.split('.')[0] === '1' ? 'SH' : secid.split('.')[0] === '116' ? 'HK' : 'SZ',
-        marketNum: secid.split('.')[0],
         code: f[2],
         name: f[1] || f[2],
         price,

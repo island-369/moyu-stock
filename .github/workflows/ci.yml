@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    # 单测与 lint 不依赖 GUI；冒烟（npm run smoke）需要真实拉东财数据 + 窗口，
+    # 在 CI 环境不稳定，保持本地跑（见 stock-widget/README.md「开发」）。
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: stock-widget
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: stock-widget/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Lint (syntax)
+        run: npm run lint
+      - name: Unit tests
+        run: npm test

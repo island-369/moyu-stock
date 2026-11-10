@@ -9,7 +9,7 @@
 <div id="app" data-theme="dark" data-fsize="standard" data-form="full">
 
   <header id="titlebar">
-    <button class="gbtn" id="btn-group" title="切换自选分组" hidden>
+    <button class="gbtn" id="btn-group" title="切换自选分组 · 快捷键 ⌥⇧← / →" hidden>
       <span id="btngroup-name">分组</span>
       <svg class="gcaret" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
@@ -26,9 +26,9 @@
 
   <div id="indexbar" hidden></div>
   <div id="colhead" hidden>
-    <span id="ch-name">名称</span>
-    <span id="ch-price" class="chsort">价格</span>
-    <span id="ch-pct" class="chsort">涨跌</span>
+    <span id="ch-name" title="点击恢复默认排序">名称</span>
+    <span id="ch-price" class="chsort" title="点击按价格排序">价格</span>
+    <span id="ch-pct" class="chsort" title="点击按涨跌幅排序">涨跌</span>
   </div>
 
   <main id="list"><div id="listinner"></div></main>
@@ -60,22 +60,41 @@
     <span id="statusright"></span>
   </footer>
 
-  <div id="addpop" hidden>
+  <div id="addpop" class="pop" hidden>
     <input id="addinput" placeholder="搜索：茅台 / 600519 / AAPL" spellcheck="false" autocomplete="off">
     <div id="addresults"></div>
   </div>
 
-  <div id="alertpop" hidden>
+  <div id="alertpop" class="pop" hidden>
     <div class="ap-head"><b id="ap-name">—</b><span id="ap-price" class="dim"></span></div>
+    <div class="pcap">到价</div>
     <div class="vrow"><span class="vlabel">涨到 ≥</span><input id="ap-gte" type="number" step="0.01" min="0" placeholder="不提醒" spellcheck="false" autocomplete="off"></div>
     <div class="vrow"><span class="vlabel">跌到 ≤</span><input id="ap-lte" type="number" step="0.01" min="0" placeholder="不提醒" spellcheck="false" autocomplete="off"></div>
-    <button class="btn" id="ap-add">设置提醒（持续有效 · 到价屏上弹窗）</button>
+    <div class="pcap">异动（当日涨跌幅）</div>
+    <div class="vrow"><span class="vlabel">涨幅超过</span><span class="ap-pct"><input id="ap-up" type="number" step="0.1" min="0" placeholder="不提醒" spellcheck="false" autocomplete="off">%</span></div>
+    <div class="vrow"><span class="vlabel">跌幅超过</span><span class="ap-pct"><input id="ap-dn" type="number" step="0.1" min="0" placeholder="不提醒" spellcheck="false" autocomplete="off">%</span></div>
+    <div class="pcap">急涨急跌（时间窗）</div>
+    <div class="vrow"><span class="vlabel">N 分钟内涨超</span><span class="ap-pct"><input id="sw-up-m" class="swm" type="number" step="1" min="1" max="240" placeholder="5" spellcheck="false" autocomplete="off">分<input id="sw-up" type="number" step="0.1" min="0" placeholder="不提醒" spellcheck="false" autocomplete="off">%</span></div>
+    <div class="vrow"><span class="vlabel">N 分钟内跌超</span><span class="ap-pct"><input id="sw-dn-m" class="swm" type="number" step="1" min="1" max="240" placeholder="5" spellcheck="false" autocomplete="off">分<input id="sw-dn" type="number" step="0.1" min="0" placeholder="不提醒" spellcheck="false" autocomplete="off">%</span></div>
+    <button class="btn" id="ap-add">设置预警（持续有效 · 命中屏上弹窗）</button>
     <button class="linklike" id="ap-preview">预览 / 调整弹窗位置</button>
+    <div class="pcap ap-list-cap">已设预警</div>
     <div id="ap-list"></div>
-    <div class="ap-hint dim">每次突破到价提醒一次，回到条件外自动重新布防，删除前一直有效；可两个方向同时设</div>
+    <div class="ap-hint dim">三类条件可同时设，删除前一直有效；每次越过条件提醒一次，回到条件内自动重新布防；两次提醒之间有冷却间隔（默认 15 分钟，设置 → 涨跌提醒可调），价位反复震荡时不会连弹；急涨急跌的分钟留空默认 5，从设置后开始采样（重启后重新积累，不误报）</div>
   </div>
 
-  <div id="vispop" hidden>
+  <div id="pospop" class="pop" hidden>
+    <div class="ap-head"><b id="pp-name">—</b><span id="pp-price" class="dim"></span></div>
+    <div class="pcap">持仓成本 / 数量（本地记录，非交易账户）</div>
+    <div class="vrow"><span class="vlabel">成本价</span><input id="pp-cost" type="number" step="0.01" min="0" placeholder="不填只看行情" spellcheck="false" autocomplete="off"></div>
+    <div class="vrow"><span class="vlabel">数量（股，可选）</span><input id="pp-qty" type="number" step="1" min="0" placeholder="不填" spellcheck="false" autocomplete="off"></div>
+    <button class="btn" id="pp-save">保存</button>
+    <button class="linklike" id="pp-remove" hidden>从持仓删除</button>
+    <div class="ap-hint dim">成本用于显示盈亏 %（持仓分组的排序、盈亏口径提醒也用它）；不填只看行情。买卖后回这里更新。此列表纯本地记录，不会同步到东财。</div>
+  </div>
+
+  <div id="vispop" class="pop" hidden>
+    <div class="pcap">外观</div>
     <div class="vrow">
       <span class="vlabel">背景浓度</span>
       <span id="visalpha-val" class="vval">78%</span>
@@ -88,6 +107,7 @@
         <button class="vbtn" id="vform-mini">迷你条</button>
       </span>
     </div>
+    <div class="pcap">列表</div>
     <div class="vrow vcol">
       <span class="vlabel">排序</span>
       <span class="segbtns" id="vsort">
@@ -103,19 +123,20 @@
       <button class="vbtn" id="vscroll">启动</button>
     </div>
     <div class="vrow">
-      <span class="vlabel">鼠标穿透</span>
-      <button class="vbtn" id="vpen">开启</button>
-    </div>
-    <div class="vrow">
       <span class="vlabel">仅看置顶 <span class="dim">(手动模式)</span></span>
       <button class="vbtn" id="vstar">关闭</button>
+    </div>
+    <div class="pcap">隐蔽 · 摸鱼</div>
+    <div class="vrow">
+      <span class="vlabel">鼠标穿透</span>
+      <button class="vbtn" id="vpen">开启</button>
     </div>
     <div class="vrow">
       <span class="vlabel">防录屏 <span class="dim">(共享/截屏不可见)</span></span>
       <button class="vbtn" id="vprot">关闭</button>
     </div>
     <div class="vrow">
-      <span class="vlabel">会议模式 <span class="dim">(⌥⇧M 隐身+防录屏+静默)</span></span>
+      <span class="vlabel">会议模式 <span class="dim">(⌥⇧M)</span></span>
       <button class="vbtn" id="vmeeting">开启</button>
     </div>
     <div class="vrow">
@@ -125,7 +146,7 @@
     <div class="vhint">穿透开启后窗口不再响应鼠标，按 ⌥⇧X 或点托盘图标恢复</div>
   </div>
 
-  <div id="grouppop" hidden>
+  <div id="grouppop" class="pop" hidden>
     <div class="gp-head">自选分组</div>
     <div id="grouplist"></div>
   </div>
@@ -166,7 +187,11 @@
       <h2>添加自选</h2>
       <input id="obsearch" placeholder="搜索：茅台 / 600519 / AAPL" spellcheck="false" autocomplete="off">
       <div id="obresults" class="obresults"></div>
-      <div class="dim obfoot"><span id="obcount">当前 0 只</span><button class="linklike" id="ob-demo">或添加示例组合</button></div>
+      <div class="dim obfoot" id="obfoot"><span id="obcount">当前 0 只</span><button class="linklike" id="ob-demo">或添加示例组合</button></div>
+      <div id="obcloudnote" class="dim" hidden>
+        扫码登录后，你在手机 App / 网页里加的自选会自动同步到小窗（约 1 分钟内）；登录后在小窗里搜索添加、删除、拖拽排序也会写回东财账号。<br>
+        只想本地建个小列表？<button class="linklike" id="ob-usemanual">改用手动列表</button>
+      </div>
       <div class="obnav"><button class="btn ghost" id="ob2back">上一步</button><span class="grow"></span><button class="btn" id="ob2next">下一步</button></div>
     </div>
 

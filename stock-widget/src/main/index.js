@@ -1,10 +1,11 @@
 'use strict';
 /**
- * 主入口：生命周期、单实例锁、崩溃恢复、冒烟模式（--smoke）。
+ * 主入口（D1 拆分后）：生命周期、单实例锁、托盘/快捷键接线、崩溃恢复、冒烟模式（--smoke）。
+ * 尺寸/弹层/缩放会话 → window-sizing.js；老板键/会议/提醒静默/防录屏/Dock 联动 → stealth.js；
+ * 配置迁移 → migrations.js；冒烟 → smoke.js。
  */
-const { app, session, nativeTheme, Notification, Menu, screen } = require('electron');
+const { app, session, nativeTheme, Notification, Menu } = require('electron');
 const path = require('path');
-const fs = require('fs');
 
 const { Store } = require('../store/settings');
 const { ROOT, DEFAULT_SHORTCUTS, SMOKE_LIST } = require('../shared/constants');
@@ -14,10 +15,16 @@ const { sessionFetcher, attachRefererFix, openLoginWindow, logout } = require('.
 const { TrayMgr } = require('./tray');
 const { registerAll } = require('./shortcuts');
 const { Orchestrator } = require('./orchestrator');
+const { runMigrations } = require('./migrations');
+const { createSizing } = require('./window-sizing');
+const { createStealth } = require('./stealth');
+const { runSmoke } = require('./smoke');
+const { validateAndExit } = require('./validate-write');
 const toast = require('./toast');
 const { setupIpc } = require('./ipc');
 
 const SMOKE = process.argv.includes('--smoke');
+const VALIDATE_WRITE = process.argv.includes('--validate-write');
 
 if (SMOKE) {
   // 冒烟模式用独立 profile，绝不污染真实设置
@@ -39,18 +46,15 @@ let settings = null;
 let orch = null;
 let log = null;
 let loginSes = null;
+let sizing = null;   // 尺寸/弹层/缩放会话（main() 里创建，依赖 settings/broadcast）
+let stealth = null;  // 隐蔽状态机（main() 里创建，依赖 tray/sizing/回调）
 const trayMgr = new TrayMgr();
 let penetrate = false;
-let bossHidden = false;
 let loginWin = null;
-let meetingMode = false;   // 会议模式：隐身 + 防录屏 + 提醒静默（⌥⇧M 一键切换，散会原样恢复）
-let preMeeting = null;     // 进会议前的窗口可见性（退出时恢复）
-let missedAlerts = [];     // 隐身/会议期间静默累积的提醒 [{key?, text}]，唤回时一次性展示
-let alertSignal = 0;       // 菜单栏异动信号：0 无 / 1 有向上异动 ▲ / -1 有向下异动 ▼
-let lastProgSize = null; // 最近一次程序化设置的窗口尺寸（用于区分用户手动拖拽）
-let preMiniSize = null;  // 进入迷你条前的窗口尺寸（退出时恢复）
-let popExpandHeight = 0; // 弹层临时撑高前的窗口高度（0 = 未撑高）
-let resizeSession = null; // 自定义边缘缩放会话（光标追踪）
+let pendingNotice = null; // 窗口隐藏期间产生的小窗内提示，唤回时以黄条补发（不再走系统通知）
+let pauseTimer = null;    // pauseWhenHidden：隐藏满 5 分钟的暂停定时器
+let crashTimes = [];      // 渲染进程崩溃时间戳（熔断用，A3）
+let autoscrollOn = false; // 列表滚动运行态（渲染层为源头，经 app:autoscroll:set 镜像，供右键菜单显示标签）
 
 const trayCtx = {
   isVisible: false,
@@ -67,10 +71,10 @@ const trayCtx = {
     settings.set({ behavior: { dockIcon: !!on } });
     setDockIcon(!!on);
   },
-  onMeeting: (on) => setMeetingMode(!!on),
+  onMeeting: (on) => stealth.setMeetingMode(!!on),
   onContentProt: (on) => {
     settings.set({ behavior: { contentProtection: !!on } });
-    applyContentProtection();
+    stealth.applyContentProtection();
   },
   onRefresh: () => orch && orch.force(),
   onSettings: () => createOrShowSettingsWindow(),
@@ -84,18 +88,27 @@ function syncTray() {
   trayCtx.form = settings ? settings.get().window.form : 'full';
   trayCtx.loggedIn = !!(orch && orch.loggedIn);
   trayCtx.dock = settings ? !!settings.get().behavior.dockIcon : false;
-  trayCtx.meeting = meetingMode;
-  trayCtx.contentProt = meetingMode || !!(settings && settings.get().behavior.contentProtection);
+  trayCtx.meeting = !!(stealth && stealth.isMeeting());
+  trayCtx.contentProt = !!(stealth && stealth.isMeeting()) || !!(settings && settings.get().behavior.contentProtection);
   trayMgr.rebuild();
   buildDockMenu();
 }
 
+/** 统一广播（主窗 + 设置窗）。登录窗加载的是东财网页、没有我们的监听器，
+ *  不再向它发送（此前每 5s 的全量 state 也发给它，纯浪费）；ipc.js 复用同一实现（D4）。 */
 function broadcast(ch, data) {
   const settingsWin = getSettingsWindow();
-  for (const w of [mainWin, loginWin, settingsWin]) {
+  for (const w of [mainWin, settingsWin]) {
     if (w && !w.isDestroyed()) {
       try { w.webContents.send(ch, data); } catch (e) { /* 忽略 */ }
     }
+  }
+}
+
+/** 只发主窗（轻量状态补丁用：设置窗需要完整结构） */
+function sendToMain(ch, data) {
+  if (mainWin && !mainWin.isDestroyed()) {
+    try { mainWin.webContents.send(ch, data); } catch (e) { /* 忽略 */ }
   }
 }
 
@@ -105,14 +118,18 @@ function settingsWindowRef() {
 
 function showMainWindow() {
   if (!mainWin || mainWin.isDestroyed()) return;
-  if (!meetingMode) bossHidden = false; // 会议模式中呼出：保持静默/菜单栏清空，散会后自动恢复
+  if (!stealth.isMeeting()) stealth.setBossHidden(false); // 会议模式中呼出：保持静默/菜单栏清空，散会后自动恢复
+  stealth.stealthDock(false); // 隐身时临时藏掉的 Dock 图标，按用户设置恢复
   settings.data.window.startHidden = false; // 已唤回：下次启动正常显示
   settings.saveSoon();
   mainWin.show();
   syncTray();
-  alertSignal = 0; // 已看过，菜单栏信号清除
-  updateTrayTitle();
-  flushMissedAlerts();
+  stealth.setAlertSignal(0); // 已看过，菜单栏信号清除（顺带刷新标题）
+  stealth.flushMissedAlerts();
+  if (pendingNotice) { // 隐藏期间积累的小窗内提示，唤回时补发（P0-2：不再弹系统通知）
+    broadcast('evt:notice', { text: pendingNotice, ms: 6000 });
+    pendingNotice = null;
+  }
 }
 
 function toggleMainWindow() {
@@ -132,113 +149,10 @@ function hideAuxWindows() {
   if (loginWin && !loginWin.isDestroyed() && loginWin.isVisible()) loginWin.hide();
 }
 
-function bossAction() {
-  if (!mainWin || mainWin.isDestroyed()) return;
-  stopPopupWatch();
-  broadcast('evt:popup:close', {});
-  const s = settings.get();
-  if (mainWin.isVisible()) {
-    mainWin.hide();
-    hideAuxWindows();
-    if (s.behavior.bossKeyAction === 'hide') {
-      bossHidden = true;
-      trayMgr.setIndexTitle([], true); // 连菜单栏文字一起隐匿
-      settings.data.window.startHidden = true; // 冷启动/崩溃重建后仍保持隐身
-      settings.saveSoon();
-    }
-    syncTray();
-  } else {
-    const sw = getSettingsWindow();
-    const auxOpen = (sw && sw.isVisible())
-      || !!(loginWin && !loginWin.isDestroyed() && loginWin.isVisible());
-    if (auxOpen) {
-      // 主窗已藏但设置窗/登录窗开着：继续藏辅助窗，而不是把主窗唤回
-      hideAuxWindows();
-      syncTray();
-    } else {
-      showMainWindow();
-    }
-  }
-}
-
-/** 隐身/会议中：提醒静默（弹系统通知等于告诉老板你在看盘） */
-function alertsPaused() {
-  return bossHidden || meetingMode;
-}
-
-/** 菜单栏信号：非隐身时任何异动都在「沪…」旁标 ▲/▼（提醒方式=menubar 时的核心出口） */
-function setAlertSignal(dir) {
-  alertSignal = dir;
-  updateTrayTitle();
-}
-
-/** 隐身/会议期间的异动静默累积（同股同方向去重，保留最新），唤回时一次性展示 */
-function pushMissed(a) {
-  const key = a.market + a.code + (a.pct > 0 ? '+' : '-');
-  missedAlerts = missedAlerts.filter((m) => m.key !== key);
-  missedAlerts.push({
-    key,
-    text: `${a.name} ${a.pct > 0 ? '+' : ''}${a.pct.toFixed(1)}%`,
-  });
-  if (missedAlerts.length > 20) missedAlerts.shift();
-}
-
-function pushMissedText(text) {
-  missedAlerts.push({ text });
-  if (missedAlerts.length > 20) missedAlerts.shift();
-}
-
-/** 唤回小窗时展示隐身期间错过的提醒（黄条在小窗内，零暴露） */
-function flushMissedAlerts() {
-  if (!missedAlerts.length) return;
-  const head = missedAlerts.slice(-4).map((m) => m.text).join('、');
-  const more = missedAlerts.length > 4 ? ` 等共 ${missedAlerts.length} 条` : '';
-  broadcast('evt:notice', { text: `隐身期间错过：${head}${more}`, ms: 8000 });
-  missedAlerts = [];
-}
-
-/** 防录屏（macOS 内容保护）：开启后窗口不出现在截屏/录屏/屏幕共享里。
- *  会议模式强制开启，退出恢复用户设置。 */
-function applyContentProtection() {
-  const on = meetingMode || !!(settings && settings.get().behavior.contentProtection);
-  for (const w of [mainWin, getSettingsWindow(), loginWin]) {
-    if (w && !w.isDestroyed()) {
-      try { w.setContentProtection(on); } catch (e) { /* 旧系统无此 API */ }
-    }
-  }
-}
-
-/** 会议模式：一键隐身 + 防录屏 + 提醒静默（含菜单栏文字清空）；散会再按一次原样恢复。
- *  与老板键的区别：菜单栏必清（共享屏幕连菜单栏一起被录）、窗口防录屏、退出恢复原状。 */
-function setMeetingMode(on) {
-  if (on === meetingMode) return;
-  meetingMode = !!on;
-  if (meetingMode) {
-    preMeeting = { wasVisible: !!(mainWin && !mainWin.isDestroyed() && mainWin.isVisible()) };
-    stopPopupWatch();
-    broadcast('evt:popup:close', {});
-    if (mainWin && !mainWin.isDestroyed()) mainWin.hide();
-    hideAuxWindows();
-    bossHidden = true; // 复用隐身语义：updateTrayTitle 清空菜单栏 + 提醒暂停
-    applyContentProtection();
-    log.info('会议模式开启：隐身 + 防录屏 + 提醒静默');
-  } else {
-    const wasVisible = preMeeting ? preMeeting.wasVisible : true;
-    bossHidden = false;
-    preMeeting = null;
-    applyContentProtection();
-    updateTrayTitle();
-    log.info('会议模式关闭');
-    if (wasVisible) showMainWindow(); // 散会恢复进会前状态（showMainWindow 顺带 flush 错过提醒）
-  }
-  broadcast('evt:meeting', meetingMode); // 渲染层眼睛面板按钮状态
-  syncTray();
-}
-
 /** 退到后台：窗口隐藏，行情继续刷新，菜单栏/托盘常驻 */
 function hideToBackground() {
   if (!mainWin || mainWin.isDestroyed() || !mainWin.isVisible()) return;
-  stopPopupWatch();
+  sizing.stopPopupWatch();
   broadcast('evt:popup:close', {});
   mainWin.hide();
   syncTray();
@@ -246,19 +160,16 @@ function hideToBackground() {
   const s = settings.get();
   if (!s.behavior.hideHintShown) {
     settings.set({ behavior: { hideHintShown: true } });
-    try {
-      new Notification({
-        title: '行情小窗已退到后台',
-        body: s.behavior.dockIcon
-          ? '行情继续刷新。点 Dock 上的图标，或屏幕右上角菜单栏的「沪 3809」文字即可恢复。'
-          : '行情继续刷新，菜单栏仍显示上证指数。点屏幕右上角菜单栏的「沪 3809」文字即可恢复。',
-      }).show();
-    } catch (e) { /* 忽略 */ }
+    // 不再弹系统通知（首次弹通知会触发 macOS 授权框，E4）：改为小窗内黄条，下次唤回时补发
+    pendingNotice = s.behavior.dockIcon
+      ? '小窗已退到后台 · 行情继续刷新：点 Dock 图标或菜单栏「沪 …」即可唤回'
+      : '小窗已退到后台 · 行情继续刷新：点菜单栏「沪 …」即可唤回';
   }
 }
 
 /** Dock 图标开关：开启后与普通应用一致（最小化/点击 Dock 恢复）；设专属彩色图标 */
 function setDockIcon(on) {
+  if (on && stealth && stealth.isDockHidden()) { syncTray(); return; } // 隐身中：恢复交给唤回流程统一处理
   try {
     if (on) {
       // 无条件 show 自愈：历史状态可能卡在 UIElement/accessory，isVisible 不可信
@@ -313,137 +224,18 @@ function setForm(form) {
   if (mainWin && !mainWin.isDestroyed()) {
     const [width, height] = mainWin.getSize();
     if (form === 'mini') {
-      // 记住进入迷你条前的尺寸（而非迷你尺寸），退出时原样恢复
-      if (!preMiniSize) preMiniSize = [width, height];
-      popExpandHeight = 0;
+      // 进入迷你条：记住完整形态尺寸（而非迷你尺寸），退出时原样恢复；
+      // 先用保守高度，渲染层量测标题栏后回设精确值
+      const h = sizing.beginMini(width, height);
       try { mainWin.setResizable(false); mainWin.setMinimumSize(210, 30); } catch (e) { /* 忽略 */ }
-      applySize(width, 40); // 先用保守值，渲染层量测标题栏后回设精确高度
+      sizing.applySize(width, h);
     } else {
-      const target = preMiniSize && preMiniSize[1] >= 120 ? preMiniSize[1] : Math.max(260, height);
-      preMiniSize = null;
+      const target = sizing.endMiniTarget(height);
       try { mainWin.setResizable(true); mainWin.setMinimumSize(210, 220); } catch (e) { /* 忽略 */ }
-      applySize(width, target);
+      sizing.applySize(width, target);
     }
   }
   syncTray();
-}
-
-/** 程序化设置尺寸（记录 lastProgSize，避免被当作手动拖拽写进 bounds） */
-function applySize(width, height) {
-  if (!mainWin || mainWin.isDestroyed()) return;
-  const [w, cur] = mainWin.getSize();
-  const h = Math.round(height);
-  if (w === Math.round(width) && Math.abs(cur - h) <= 1) return;
-  lastProgSize = [Math.round(width), h];
-  mainWin.setSize(Math.round(width), h);
-}
-
-/** 弹层临时撑高：h>0 需要的高度；h=0 恢复（不写入 settings，退出弹层即还原） */
-function expandForPopup(h) {
-  if (!mainWin || mainWin.isDestroyed() || resizeSession) return;
-  const [w, cur] = mainWin.getSize();
-  if (h > 0) {
-    const need = Math.max(120, Math.round(h));
-    if (need > cur + 2) {
-      if (popExpandHeight === 0) popExpandHeight = cur;
-      applySize(w, need);
-    }
-  } else if (popExpandHeight > 0) {
-    applySize(w, popExpandHeight);
-    popExpandHeight = 0;
-  }
-}
-
-/**
- * 弹层监视：主窗是非激活面板，点到窗口外面（别的应用/桌面）时收不到点击事件，
- * 因此用光标位置判断——指针持续在窗口外即视为“点到旁边”，通知渲染层收掉弹层。
- */
-let popupWatch = null;
-
-function setPopupWatch(open) {
-  if (!open) { stopPopupWatch(); return; }
-  if (popupWatch) return;
-  popupWatch = {
-    outsideSince: 0,
-    timer: setInterval(() => {
-      if (!mainWin || mainWin.isDestroyed() || !mainWin.isVisible()) { stopPopupWatch(); return; }
-      const b = mainWin.getBounds();
-      const p = screen.getCursorScreenPoint();
-      const inside = p.x >= b.x - 10 && p.x <= b.x + b.width + 10
-        && p.y >= b.y - 10 && p.y <= b.y + b.height + 10;
-      if (inside) { popupWatch.outsideSince = 0; return; }
-      if (!popupWatch.outsideSince) { popupWatch.outsideSince = Date.now(); return; }
-      if (Date.now() - popupWatch.outsideSince >= 800) {
-        broadcast('evt:popup:close', {});
-        stopPopupWatch();
-      }
-    }, 220),
-  };
-}
-
-function stopPopupWatch() {
-  if (popupWatch) { clearInterval(popupWatch.timer); popupWatch = null; }
-}
-
-function setHeight(h) {
-  if (!mainWin || mainWin.isDestroyed() || resizeSession) return;
-  const s = settings.get();
-  const mini = s.window.form === 'mini';
-  // 迷你条：高度由渲染层实测标题栏回设；完整形态：仅 autoHeight 开启时自动量高
-  if (!mini && !s.appearance.autoHeight) return;
-  const [width, cur] = mainWin.getSize();
-  const clamped = mini
-    ? Math.max(30, Math.min(120, Math.round(h)))
-    : Math.max(260, Math.min(820, Math.round(h)));
-  if (Math.abs(cur - clamped) > 2) {
-    lastProgSize = [width, clamped];
-    mainWin.setSize(width, clamped);
-  }
-}
-
-/** 毛玻璃与浓度联动：浓度 ≥55% 才开（低浓度下 blur 层会盖住浓度变化） */
-/** 自定义边缘缩放：应用不在前台也能用（光标追踪 + 实时 setSize） */
-function startResizeSession(dir) {
-  if (!mainWin || mainWin.isDestroyed() || resizeSession) return;
-  const b = mainWin.getBounds();
-  resizeSession = {
-    dir, startX: b.x, startY: b.y, startW: b.width, startH: b.height,
-  };
-  const c0 = screen.getCursorScreenPoint();
-  resizeSession.curX = c0.x; resizeSession.curY = c0.y;
-  resizeSession.timer = setInterval(() => {
-    if (!mainWin || mainWin.isDestroyed()) { stopResizeSession(); return; }
-    const p = screen.getCursorScreenPoint();
-    let width = resizeSession.startW;
-    let height = resizeSession.startH;
-    if (resizeSession.dir.includes('e')) width = Math.max(210, Math.min(1200, resizeSession.startW + (p.x - resizeSession.curX)));
-    if (resizeSession.dir.includes('s')) height = Math.max(220, Math.min(940, resizeSession.startH + (p.y - resizeSession.curY)));
-    mainWin.setSize(width, height);
-    lastProgSize = [width, height];
-  }, 16);
-}
-
-function stopResizeSession() {
-  if (!resizeSession) return;
-  clearInterval(resizeSession.timer);
-  resizeSession = null;
-  if (settings && (settings.get().appearance.autoHeight || settings.get().appearance.autoWidth)) {
-    settings.set({ appearance: { autoHeight: false, autoWidth: false } });
-    broadcast('evt:settings', settings.get());
-  }
-  if (mainWin && !mainWin.isDestroyed()) lastProgSize = mainWin.getSize();
-}
-
-function setWidth(w) {
-  if (!mainWin || mainWin.isDestroyed() || resizeSession) return;
-  const s = settings.get();
-  if (!s.appearance.autoWidth || s.window.form !== 'full') return;
-  const [, cur] = mainWin.getSize();
-  const clamped = Math.max(210, Math.min(1200, Math.round(w)));
-  if (Math.abs(cur - clamped) > 2) {
-    lastProgSize = [clamped, cur];
-    mainWin.setSize(clamped, cur);
-  }
 }
 
 function applyVibrancy() {
@@ -456,7 +248,34 @@ function applyVibrancy() {
 
 function updateTrayTitle() {
   const st = orch && orch.currentState();
-  trayMgr.setIndexTitle(st ? st.indexes : [], bossHidden, alertSignal);
+  if (!st || !stealth) { trayMgr.setIndexTitle([], !!(stealth && stealth.isBossHidden()), 0, false); return; }
+  // 数据滞后标记（3.2）：轮询暂停中，或拉取持续失败超 5 分钟 → 菜单栏尾部加中性「·」，
+  // 避免把旧数字误读成实时（收盘后的自然滞后不算，那本来就是收盘价）
+  const stale = (orch.isPaused && orch.isPaused())
+    || (st.status && st.status.code === 'net-error' && Date.now() - (st.status.lastUpdate || 0) > 5 * 60 * 1000);
+  trayMgr.setIndexTitle(st.indexes, stealth.isBossHidden(), stealth.getAlertSignal(), stale);
+}
+
+/** pauseWhenHidden（P0-5）：窗口隐藏超 5 分钟 → 暂停行情/云同步轮询（省电省流量，
+ *  网关侧也少一条稳定特征）；唤回立即恢复并刷新。托盘「刷新自选」始终可用（force 解除暂停）。 */
+function applyPausePolicy() {
+  if (!orch) return;
+  const on = !!settings.get().behavior.pauseWhenHidden;
+  const visible = !!(mainWin && !mainWin.isDestroyed() && mainWin.isVisible());
+  if (!on || visible) {
+    if (pauseTimer) { clearTimeout(pauseTimer); pauseTimer = null; }
+    orch.resume();
+    return;
+  }
+  if (!pauseTimer && !orch.isPaused()) {
+    pauseTimer = setTimeout(() => {
+      pauseTimer = null;
+      if (mainWin && !mainWin.isDestroyed() && !mainWin.isVisible()) {
+        orch.pause();
+        updateTrayTitle(); // 菜单栏补「数据滞后」标记
+      }
+    }, 5 * 60 * 1000);
+  }
 }
 
 /** ⌥⇧←/→ 循环切换分组：全部 → 持仓 → 各云分组（manual：自选 → 持仓）；顺序与分组下拉一致 */
@@ -533,9 +352,8 @@ function openLogin() {
       loginWin = null;
       orch.onLoginSuccess();
       syncTray();
-      try {
-        new Notification({ title: '行情小窗', body: '登录成功，云端自选开始同步' }).show();
-      } catch (e) { /* 忽略 */ }
+      // 不再弹系统通知（E4：避免触发 macOS 授权弹窗）：小窗内黄条即达意
+      broadcast('evt:notice', { text: '登录成功，云端自选开始同步', ms: 5000 });
     },
     onCancelled: () => { loginWin = null; },
   });
@@ -551,12 +369,12 @@ async function doLogout() {
 function reregisterShortcuts() {
   const sc = settings.get().shortcuts || DEFAULT_SHORTCUTS;
   const handlers = {
-    boss: bossAction,
+    boss: () => stealth.bossAction(),
     showhide: toggleMainWindow,
     penetrate: () => setPenetrate(!penetrate),
     alphaUp: () => nudgeAlpha(+0.05),
     alphaDown: () => nudgeAlpha(-0.05),
-    meeting: () => setMeetingMode(!meetingMode),
+    meeting: () => stealth.setMeetingMode(!stealth.isMeeting()),
     groupPrev: () => cycleGroup(-1),
     groupNext: () => cycleGroup(+1),
   };
@@ -569,19 +387,12 @@ function reregisterShortcuts() {
 function nudgeAlpha(delta) {
   const s = settings.get();
   const next = Math.max(0.35, Math.min(1, +(s.appearance.bgAlpha + delta).toFixed(2)));
-  settings.set({ appearance: { bgAlpha: next } });
+  settings.setSoon({ appearance: { bgAlpha: next } }); // 高频按键：防抖落盘（D12）
   broadcast('evt:settings', settings.get());
 }
 
-let autoscrollOn = false; // 列表滚动运行态（渲染层为源头，经 app:autoscroll:set 镜像，供右键菜单显示标签）
-
-/** 空白处右键快捷菜单：浓度/排序/形态/隐身/设置（不依赖找到眼睛按钮） */
-/** 排序模式归一化（兼容旧值 pct → pct-desc） */
-function normSort(m) {
-  const v = m || 'default';
-  return v === 'pct' ? 'pct-desc' : v;
-}
-
+/** 空白处右键快捷菜单：浓度/排序/形态/隐身/设置（不依赖找到眼睛按钮）。
+ *  注：sortMode 归一化已收口到 Store（load/set 写入时归一），读侧直接用原始值。 */
 function setSort(m) {
   const patch = { source: { sortMode: m } };
   if (orch && orch.rememberSort) patch.source.groupSorts = orch.rememberSort(m); // 记到当前分组名下
@@ -636,11 +447,11 @@ function bgContextMenu() {
     {
       label: '排序',
       submenu: [
-        { label: '默认（自选顺序）', type: 'radio', checked: normSort(s.source.sortMode) === 'default', click: () => setSort('default') },
-        { label: '涨幅 ↓', type: 'radio', checked: normSort(s.source.sortMode) === 'pct-desc', click: () => setSort('pct-desc') },
-        { label: '跌幅 ↓', type: 'radio', checked: normSort(s.source.sortMode) === 'pct-asc', click: () => setSort('pct-asc') },
-        { label: '价格 高→低', type: 'radio', checked: normSort(s.source.sortMode) === 'price-desc', click: () => setSort('price-desc') },
-        { label: '价格 低→高', type: 'radio', checked: normSort(s.source.sortMode) === 'price-asc', click: () => setSort('price-asc') },
+        { label: '默认（自选顺序）', type: 'radio', checked: (s.source.sortMode || 'default') === 'default', click: () => setSort('default') },
+        { label: '涨幅 ↓', type: 'radio', checked: s.source.sortMode === 'pct-desc', click: () => setSort('pct-desc') },
+        { label: '跌幅 ↓', type: 'radio', checked: s.source.sortMode === 'pct-asc', click: () => setSort('pct-asc') },
+        { label: '价格 高→低', type: 'radio', checked: s.source.sortMode === 'price-desc', click: () => setSort('price-desc') },
+        { label: '价格 低→高', type: 'radio', checked: s.source.sortMode === 'price-asc', click: () => setSort('price-asc') },
       ],
     },
     {
@@ -652,18 +463,18 @@ function bgContextMenu() {
       click: () => setForm(s.window.form === 'mini' ? 'full' : 'mini'),
     },
     {
-      label: '会议模式（隐身 + 防录屏 + 静默）', type: 'checkbox', checked: meetingMode,
-      click: () => setMeetingMode(!meetingMode),
+      label: '会议模式（隐身 + 防录屏 + 静默）', type: 'checkbox', checked: stealth.isMeeting(),
+      click: () => stealth.setMeetingMode(!stealth.isMeeting()),
     },
     {
       label: '防录屏保护（共享/录屏/截屏不可见）', type: 'checkbox', checked: !!s.behavior.contentProtection,
       click: (it) => {
         settings.set({ behavior: { contentProtection: it.checked } });
-        applyContentProtection();
+        stealth.applyContentProtection();
       },
     },
     { type: 'separator' },
-    { label: '立即隐身', click: bossAction },
+    { label: '立即隐身', click: () => stealth.bossAction() },
     { label: '设置…', click: () => createOrShowSettingsWindow() },
   ];
   const w = mainWin;
@@ -672,39 +483,22 @@ function bgContextMenu() {
   }
 }
 
-/* ---------------- 冒烟模式 ---------------- */
-
-function runSmoke() {
-  let done = false;
-  const finish = async (why) => {
-    if (done) return;
-    done = true;
-    log.info('smoke finish: ' + why);
-    console.log('SMOKE_FINISH(' + why + ') data=' + (orch && orch.lastUpdate ? 'yes' : 'no'));
-    await new Promise((r) => setTimeout(r, 1500));
-    try {
-      const img = await mainWin.webContents.capturePage();
-      const out = path.join(ROOT, 'smoke-screenshot.png');
-      fs.writeFileSync(out, img.toPNG());
-      console.log('SMOKE_OK ' + out);
-    } catch (e) {
-      console.error('SMOKE_CAPTURE_FAIL ' + (e && e.message));
-    }
-    setTimeout(() => app.exit(0), 300);
-  };
-  orch.on('state', () => { if (orch.lastUpdate) finish('data'); });
-  setTimeout(() => finish('timeout'), 25000);
-}
-
 /** 主窗事件集中接线（含崩溃重建后的复接） */
 function wireMainWindow(win) {
-  win.on('show', syncTray);
-  win.on('hide', syncTray);
+  win.on('show', () => { syncTray(); applyPausePolicy(); });
+  win.on('hide', () => { syncTray(); applyPausePolicy(); });
+  // 失焦收弹层：非激活面板不一定收得到点击，blur 是第一道、光标监视是兜底。
+  // （2026-10 修复 A3：此前只挂在 main() 里，崩溃重建后的窗口没有这条接线）
+  win.on('blur', () => { sizing.stopPopupWatch(); broadcast('evt:popup:close', {}); });
+  // 穿透重放（A3）：重建的新窗口要恢复 ignoreMouseEvents，否则黄条提示与实际行为相反
+  if (penetrate) {
+    try { win.setIgnoreMouseEvents(true, { forward: true }); } catch (e) { /* 忽略 */ }
+  }
   // 用户拖边调整尺寸 → 自动切手动尺寸模式（关闭高度自适应，可随时在设置重开）
   win.on('resized', () => {
     if (win.isDestroyed()) return;
     const [w, h] = win.getSize();
-    if (lastProgSize && Math.abs(lastProgSize[0] - w) <= 2 && Math.abs(lastProgSize[1] - h) <= 2) return;
+    if (sizing.isProgSize(w, h)) return; // 本模块刚程序化设置的，不是用户拖拽
     if (settings.get().appearance.autoHeight || settings.get().appearance.autoWidth) {
       settings.set({ appearance: { autoHeight: false, autoWidth: false } });
       broadcast('evt:settings', settings.get());
@@ -743,26 +537,26 @@ function main() {
   log.info('=== 行情小窗启动 v0.1.0 smoke=' + SMOKE + ' ===');
 
   settings = new Store(path.join(userData, 'settings.json')).load();
-  // 一次性迁移：v0.1.0 早期默认 dockIcon=false 已随旧配置持久化在磁盘上，
-  // 新默认是 true（正常应用行为）。只翻转一次，之后用户可自由开关。
-  if (!settings.get().behavior.dockMigrated) {
-    settings.set({ behavior: { dockIcon: true, dockMigrated: true } });
-    log.info('配置迁移：dockIcon 旧默认 false → 新默认 true');
-  }
-  // 分组默认值迁移：旧默认 all（合并 422 只）→ first（像东财默认落在自选股）
-  if (!settings.get().source.activeGroupMigrated) {
-    const patch = { source: { activeGroupMigrated: true } };
-    if (settings.get().source.activeGroup === 'all') patch.source.activeGroup = 'first';
-    settings.set(patch);
-    log.info('配置迁移：activeGroup all → first');
-  }
-  // 脉冲迁移：旧默认 true → false（办公室红绿闪烁太显眼，静默优先；需要可在设置开）
-  if (!settings.get().appearance.pulseMigrated) {
-    const patch = { appearance: { pulseMigrated: true } };
-    if (settings.get().appearance.pulse === true) patch.appearance.pulse = false;
-    settings.set(patch);
-    log.info('配置迁移：变动脉冲默认关闭（静默优先）');
-  }
+  // 配置迁移（历史布尔标记 + schemaVersion 迁移表，见 migrations.js）
+  runMigrations(settings, log);
+
+  // 拆分出的两个状态机（依赖 settings/log，只能在此创建；此后所有调用走实例）
+  sizing = createSizing({ getMainWin: () => mainWin, settings, broadcast });
+  stealth = createStealth({
+    getMainWin: () => mainWin,
+    getAuxWindows: () => [getSettingsWindow(), loginWin],
+    hideAuxWindows,
+    settings,
+    tray: trayMgr,
+    log,
+    broadcast,
+    sizing,
+    syncTray,
+    showMainWindow,
+    setDockIcon,
+    updateTrayTitle,
+  });
+
   // Dock 策略：Electron 默认就是常规应用（有 Dock 图标）。
   // 只在用户关闭时 hide —— 避免启动时 hide→show 快速切换导致卡在无 Dock 状态。
   if (!settings.get().behavior.dockIcon) {
@@ -774,21 +568,6 @@ function main() {
     try { app.dock.setIcon(path.join(ROOT, 'assets', 'app-icon.png')); } catch (e) { /* 忽略 */ }
   }
   try { log.info('Dock 可见性: ' + app.dock.isVisible()); } catch (e) { log.warn('Dock 可见性查询失败: ' + e.message); }
-  if (!settings.get().shortcuts) {
-    settings.data.shortcuts = { ...DEFAULT_SHORTCUTS };
-    settings.save();
-  }
-  // 老配置补齐新增快捷键（会议模式 / 分组切换；新配置由 DEFAULT_SHORTCUTS 直接带上）
-  const sc = settings.get().shortcuts;
-  const scPatch = {};
-  for (const k of ['meeting', 'groupPrev', 'groupNext']) {
-    if (!sc[k]) scPatch[k] = DEFAULT_SHORTCUTS[k];
-  }
-  if (Object.keys(scPatch).length) {
-    settings.data.shortcuts = { ...sc, ...scPatch };
-    settings.save();
-    log.info('配置迁移：补充新快捷键 ' + Object.keys(scPatch).join('/'));
-  }
   if (SMOKE) {
     settings.data.onboarded = true;
     settings.data.source.manualList = SMOKE_LIST.map((e) => ({ m: e.m, c: e.c }));
@@ -801,6 +580,17 @@ function main() {
   loginSes = session.fromPartition('persist:em-login');
   attachRefererFix(loginSes); // myfavor 接口强制要求 Referer（见 login-window.js 注释）
 
+  // 写回链路真机验证：加一只测试股再删掉，验证完直接退出（不进正常启动流程）。
+  // 需先退出正在运行的行情小窗（单实例锁）；详见 validate-write.js 头部说明。
+  if (VALIDATE_WRITE) {
+    log.info('validate-write 模式启动');
+    validateAndExit({ fetcher: sessionFetcher(loginSes), log }).catch((e) => {
+      log.error('validate-write crash', e && e.message);
+      app.exit(1);
+    });
+    return;
+  }
+
   orch = new Orchestrator({
     settings,
     log,
@@ -809,7 +599,11 @@ function main() {
   });
   toast.init({ settings, log, showMainWindow });
   orch.on('state', (st) => {
-    broadcast('evt:state', st);
+    if (st && st.light) {
+      sendToMain('evt:state', st); // 轻量状态补丁只发主窗（设置窗需要完整结构）
+    } else {
+      broadcast('evt:state', st);
+    }
     updateTrayTitle();
   });
   orch.on('login', (ok) => {
@@ -819,68 +613,99 @@ function main() {
   orch.on('api-changed', () => {
     broadcast('evt:notice', { text: '云端自选接口疑似变更，已切换手动模式兜底' });
   });
+  // 云端写回（双向同步）结果提示：写失败/未同步 → 小窗内黄条，不动登录态
+  orch.on('notice', (n) => broadcast('evt:notice', n || {}));
   // 摸鱼核心：异动找你，不用盯。
   // 分发优先级：窗口可见 → 小窗内黄条（零暴露）→ 隐身/会议 → 静默累积 → 否则按提醒方式分发。
+  // 系统横幅仅 banner 档弹发且一律 silent（P0-2：不出声、不触发不必要的系统交互）。
   orch.on('alert', (a) => {
     try {
       const s = settings.get();
-      setAlertSignal(a.pct > 0 ? 1 : -1); // 菜单栏 ▲/▼ 信号任何模式都更新（menubar 风格的出口）
+      // 指数异动用 ▲▲/▼▼ 双符号（与个股 ▲/▼ 区分）；菜单栏信号任何模式都更新
+      stealth.setAlertSignal(a.market === 'IX' ? (a.pct > 0 ? 2 : -2) : (a.pct > 0 ? 1 : -1));
       const winVisible = !!(mainWin && !mainWin.isDestroyed() && mainWin.isVisible());
+      const th = a.market === 'IX' ? (s.alerts && s.alerts.indexThreshold) : s.alerts.threshold;
       if (winVisible) {
         // 窗口开着：黄条提示即可，弹系统通知反而多余且显眼
         broadcast('evt:notice', {
-          text: `${a.name} ${a.pct > 0 ? '+' : ''}${a.pct.toFixed(2)}% · 越过 ±${s.alerts.threshold}% 阈值`,
+          text: `${a.market === 'IX' ? '大盘 · ' : ''}${a.name} ${a.pct > 0 ? '+' : ''}${a.pct.toFixed(2)}% · 越过 ±${th}% 阈值`,
           ms: 5000,
         });
         return;
       }
-      if (alertsPaused()) { pushMissed(a); return; } // 隐身/会议：静默累积，唤回后展示
-      const style = (s.alerts && s.alerts.style) || 'banner';
+      if (stealth.alertsPaused()) { stealth.pushMissed(a); return; } // 隐身/会议：静默累积，唤回后展示
+      const style = (s.alerts && s.alerts.style) || 'menubar';
       if (style === 'silent' || style === 'menubar') return; // 只靠信号/黄条，不弹横幅
       const lowKey = !!s.alerts.lowKey;
       const n = new Notification(lowKey
         ? {
             title: '行情提醒',
-            body: `有自选越过 ±${s.alerts.threshold}% 阈值 · 点击查看`, // 不出现股票名与价格
+            body: `有自选越过 ±${th}% 阈值 · 点击查看`, // 不出现股票名与价格
+            silent: true,
           }
         : {
             title: `${a.name} ${a.pct > 0 ? '+' : ''}${a.pct.toFixed(2)}%`,
-            body: `现价 ${a.price != null ? a.price.toFixed(2) : '—'} · 越过 ±${s.alerts.threshold}% 阈值 · 点击查看`,
+            body: `现价 ${a.price != null ? a.price.toFixed(2) : '—'} · 越过 ±${th}% 阈值 · 点击查看`,
+            silent: true,
           });
       n.on('click', () => showMainWindow());
       n.show();
     } catch (e) { log.warn('异动提醒失败: ' + e.message); }
   });
-  // 个股股价提醒（列表右键 → 股价提醒）：用户预设的到价通知，持续有效；隐身/会议期间静默累积。
-  // 到价用屏上弹窗（屏幕底部居中、可拖动记忆位置、不夺焦点），不用右上角系统通知。
+  // 个股预警（列表右键 → 预警设置）：到价 + 异动（涨/跌幅越过专属阈值），持续有效；隐身/会议期间静默累积。
+  // 命中用屏上弹窗（屏幕底部居中、可拖动记忆位置、不夺焦点），不用右上角系统通知。
   orch.on('pricealert', (a) => {
     try {
       const dir = a.op === 'lte' ? '≤' : '≥';
-      const text = `${a.name} 现价 ${a.price.toFixed(2)} · 已${a.op === 'lte' ? '跌' : '涨'}到 ${dir} ${a.target.toFixed(2)}`;
-      setAlertSignal(a.op === 'lte' ? -1 : 1);
+      const px = a.price != null ? a.price.toFixed(2) : '—';
+      const kindTxt = a.kind === 'sw' ? '急涨急跌' : a.kind === 'pct' ? '异动预警' : '股价提醒';
+      // sw=时间窗急涨急跌；pct=当日涨/跌幅异动；默认=到价提醒
+      const text = a.kind === 'sw'
+        ? `${a.name} 现价 ${px} · ${a.mins} 分钟内${a.op === 'lte' ? '跌' : '涨'}幅 ${Math.abs(a.pct).toFixed(2)}% 已超过 ${a.target}%`
+        : a.kind === 'pct'
+          ? `${a.name} 现价 ${px} · 今日${a.op === 'lte' ? '跌' : '涨'}幅 ${Math.abs(a.pct).toFixed(2)}% 已越过 ${dir}${a.target}%`
+          : `${a.name} 现价 ${px} · 已${a.op === 'lte' ? '跌' : '涨'}到 ${dir} ${a.target.toFixed(2)}`;
+      stealth.setAlertSignal(a.op === 'lte' ? -1 : 1);
       const winVisible = !!(mainWin && !mainWin.isDestroyed() && mainWin.isVisible());
       if (winVisible) broadcast('evt:notice', { text: text + ' · 提醒已生效', ms: 6000 });
-      if (alertsPaused()) { pushMissedText(text); return; }
+      if (stealth.alertsPaused()) { stealth.pushMissedText(text); return; }
       toast.showAlertToast({
-        title: `股价提醒 · ${a.name}`,
-        body: `现价 ${a.price.toFixed(2)}，已${a.op === 'lte' ? '跌到' : '涨到'} ${a.target.toFixed(2)}`,
+        title: `${kindTxt} · ${a.name}`,
+        body: a.kind === 'sw'
+          ? `现价 ${px}，${a.mins} 分钟内${a.op === 'lte' ? '跌幅' : '涨幅'} ${Math.abs(a.pct).toFixed(2)}% 已超过 ${a.target}%`
+          : a.kind === 'pct'
+            ? `现价 ${px}，今日${a.op === 'lte' ? '跌幅' : '涨幅'} ${Math.abs(a.pct).toFixed(2)}% 已越过 ${dir}${a.target}%`
+            : `现价 ${px}，已${a.op === 'lte' ? '跌到' : '涨到'} ${dir} ${a.target.toFixed(2)}`,
         accent: a.op === 'lte' ? fallColor() : riseColor(),
       });
-    } catch (e) { log.warn('股价提醒通知失败: ' + e.message); }
+    } catch (e) { log.warn('个股预警通知失败: ' + e.message); }
   });
   // orchestrator 自己改了设置（如命中后移除规则）→ 同步给两个窗口
   orch.on('settings-changed', () => broadcast('evt:settings', settings.get()));
   orch.on('summary', (s) => {
     try {
-      if (alertsPaused()) {
+      const st = settings.get();
+      if (stealth.alertsPaused()) {
         // 隐身/会议中战报也静默：文本累积，唤回时随异动一起展示
-        pushMissedText(`收盘战报：平均 ${s.avg > 0 ? '+' : ''}${s.avg.toFixed(2)}% 涨${s.up} 跌${s.dn}`);
+        stealth.pushMissedText(`收盘战报：平均 ${s.avg > 0 ? '+' : ''}${s.avg.toFixed(2)}% 涨${s.up} 跌${s.dn}`);
         return;
       }
-      const n = new Notification({
-        title: `收盘 · 自选战报（${s.count} 只）`,
-        body: `平均 ${s.avg > 0 ? '+' : ''}${s.avg.toFixed(2)}% · 涨${s.up} 跌${s.dn} 平${s.flat}\n领涨 ${s.top.name} ${s.top.pct > 0 ? '+' : ''}${s.top.pct.toFixed(2)}% · 领跌 ${s.bot.name} ${s.bot.pct.toFixed(2)}%`,
-      });
+      const avgTxt = `${s.avg > 0 ? '+' : ''}${s.avg.toFixed(2)}%`;
+      const style = (st.alerts && st.alerts.style) || 'menubar';
+      const winVisible = !!(mainWin && !mainWin.isDestroyed() && mainWin.isVisible());
+      if (style === 'silent' || style === 'menubar') {
+        // 不弹横幅（P0-2 / E3：战报不再无视提醒方式设置）：菜单栏方向信号 + 窗口开着时黄条
+        stealth.setAlertSignal(s.avg >= 0 ? 1 : -1);
+        if (winVisible) {
+          broadcast('evt:notice', { text: `收盘战报 · 平均 ${avgTxt} · 涨${s.up} 跌${s.dn} 平${s.flat}`, ms: 8000 });
+        }
+        return;
+      }
+      const lowKey = !!st.alerts.lowKey;
+      const body = lowKey
+        ? `平均 ${avgTxt} · 涨${s.up} 跌${s.dn} 平${s.flat}` // 低调模式：不出现股票名
+        : `平均 ${avgTxt} · 涨${s.up} 跌${s.dn} 平${s.flat}\n领涨 ${s.top.name} ${s.top.pct > 0 ? '+' : ''}${s.top.pct.toFixed(2)}% · 领跌 ${s.bot.name} ${s.bot.pct.toFixed(2)}%`;
+      const n = new Notification({ title: `收盘 · 自选战报（${s.count} 只）`, body, silent: true });
       n.on('click', () => showMainWindow());
       n.show();
     } catch (e) { log.warn('战报通知失败: ' + e.message); }
@@ -888,15 +713,22 @@ function main() {
 
   // 隐身态冷启动：上次完全隐身后退出 → 本次启动保持隐身（不弹窗），菜单栏快捷键唤回。
   const startHidden = !!settings.get().window.startHidden && !!settings.get().onboarded;
-  if (startHidden) bossHidden = true;
+  if (startHidden) stealth.setBossHidden(true);
   const mainWinOpts = SMOKE ? { query: { smoke: '1' } } : undefined;
   mainWin = createMainWindow(settings, log, { ...mainWinOpts, startHidden });
   wireMainWindow(mainWin);
-  applyContentProtection(); // 恢复用户设置的防录屏状态（新窗口默认关闭）
-  // 窗口失焦（若面板可激活）也收掉弹层；光标监视是兼底手段
-  mainWin.on('blur', () => { stopPopupWatch(); broadcast('evt:popup:close', {}); });
+  stealth.applyContentProtection(); // 恢复用户设置的防录屏状态（新窗口默认关闭）
   mainWin.webContents.on('render-process-gone', (_e, details) => {
     log.error('渲染进程崩溃: ' + details.reason + '，自动重建');
+    // 熔断（A3）：60 秒内 3 次崩溃 → 不再无限 destroy/create 循环，退出留日志
+    crashTimes.push(Date.now());
+    crashTimes = crashTimes.filter((t) => Date.now() - t < 60000);
+    if (crashTimes.length >= 3) {
+      log.error('渲染进程 60 秒内崩溃 3 次，熔断退出');
+      app.quit();
+      return;
+    }
+    sizing.resetForRebuild(); // 清掉指向旧窗口的弹层监视/缩放会话/临时撑高状态
     const bounds = mainWin ? mainWin.getBounds() : null;
     // 隐身/退后台中崩溃 → 重建后保持隐藏（自动弹出等于暴露）；会议模式中同理
     const startHidden = !(mainWin && !mainWin.isDestroyed() && mainWin.isVisible());
@@ -904,7 +736,7 @@ function main() {
     mainWin = createMainWindow(settings, log, { ...(SMOKE ? { query: { smoke: '1' } } : {}), startHidden });
     if (bounds) { try { mainWin.setBounds(bounds); } catch (e) { /* 忽略 */ } }
     wireMainWindow(mainWin);
-    applyContentProtection();
+    stealth.applyContentProtection();
   });
   if (process.env.WIDGET_DEV) {
     mainWin.webContents.openDevTools({ mode: 'detach' });
@@ -922,23 +754,25 @@ function main() {
     openLogin,
     doLogout,
     setForm,
-    setHeight,
-    setWidth,
-    expandForPopup,
-    setPopupWatch,
-    startResizeSession,
-    stopResizeSession,
+    setHeight: (h) => sizing.setHeight(h),
+    setWidth: (w) => sizing.setWidth(w),
+    expandForPopup: (h) => sizing.expandForPopup(h),
+    setPopupWatch: (open) => sizing.setPopupWatch(open),
+    startResizeSession: (dir) => sizing.startResizeSession(dir),
+    stopResizeSession: () => sizing.stopResizeSession(),
     openExternalUrl,
     setStar,
     removeStock,
     togglePenetrate: () => setPenetrate(!penetrate),
-    bossAction,
-    toggleMeeting: () => setMeetingMode(!meetingMode),
+    bossAction: () => stealth.bossAction(),
+    toggleMeeting: () => stealth.setMeetingMode(!stealth.isMeeting()),
     applyLoginItem,
     hideToBackground,
     setDockIcon,
-    applyContentProtection,
+    applyContentProtection: () => stealth.applyContentProtection(),
     bgContextMenu,
+    broadcast,           // ipc.js 复用同一广播实现（D4：此前两处实现覆盖的窗口集合不同）
+    applyPausePolicy,    // 设置里改 pauseWhenHidden 后即时生效
     getPenetrate: () => penetrate,
     setAutoscrollOn: (v) => { autoscrollOn = !!v; },
     toast,
@@ -956,6 +790,10 @@ function main() {
 
   orch.start();
 
+  // 隐身态冷启动：连 Dock 也不出现（用户开着 dockIcon 时临时藏，P0-1）
+  if (stealth.isBossHidden()) stealth.stealthDock(true);
+  applyPausePolicy(); // pauseWhenHidden 初始评估（含隐身冷启动场景）
+
   nativeTheme.on('updated', () => {
     if (settings.get().appearance.theme === 'auto') {
       broadcast('evt:settings', settings.get());
@@ -969,8 +807,9 @@ function main() {
     setQuitting(true); // 放行主窗 close（否则 preventDefault 会中止 app.quit，托盘/Dock/界面退出全部失效）
     try { require('electron').globalShortcut.unregisterAll(); } catch (e) { /* 忽略 */ }
     if (orch) orch.stop();
+    try { settings.flush(); } catch (e) { /* 忽略 */ } // 防抖中的设置改动（浓度等）退出前落盘
     trayMgr.destroy();
   });
 
-  if (SMOKE) runSmoke();
+  if (SMOKE) runSmoke({ orch, getMainWin: () => mainWin, log });
 }

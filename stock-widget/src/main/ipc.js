@@ -4,6 +4,8 @@
  */
 const { ipcMain, shell, clipboard, Menu, app } = require('electron');
 const { DEFAULT_SHORTCUTS } = require('../shared/constants');
+const { alertFormDefaults, upsertAlertRule } = require('../shared/alerts');
+const { upsertPosition, positionDefaults } = require('../shared/positions');
 const search = require('../core/market/search');
 const trends = require('../core/market/trends');
 const news = require('../core/market/news');
@@ -23,14 +25,8 @@ const VALID_MARKETS = ['SH', 'SZ', 'BJ', 'HK', 'US'];
 function setupIpc(ctx) {
   const { settings, orch, log } = ctx;
 
-  const broadcast = (ch, data) => {
-    for (const w of [ctx.getMainWin(), ctx.getSettingsWin()]) {
-      if (w && !w.isDestroyed()) {
-        try { w.webContents.send(ch, data); } catch (e) { /* 窗口可能正在销毁 */ }
-      }
-    }
-  };
-  ctx.broadcast = broadcast;
+  // 统一广播：复用 index.js 的实现（覆盖主窗 + 设置窗；D4：不再各自维护一套）
+  const broadcast = ctx.broadcast;
 
   ipcMain.handle('app:boot', () => ({
     state: orch.currentState(),
@@ -74,7 +70,9 @@ function setupIpc(ctx) {
     if (patch.source && patch.source.sortMode != null && orch.rememberSort) {
       patch = { ...patch, source: { ...patch.source, groupSorts: orch.rememberSort(patch.source.sortMode) } };
     }
-    const next = settings.set(patch);
+    // 纯外观补丁（浓度拖杆等高频）走防抖落盘（D12）；其余同步写
+    const appearanceOnly = patch.appearance && Object.keys(patch).length === 1;
+    const next = appearanceOnly ? settings.setSoon(patch) : settings.set(patch);
     broadcast('evt:settings', next);
     if (patch.shortcuts) ctx.reregisterShortcuts();
     if (patch.appearance) ctx.applyVibrancy();
@@ -82,6 +80,7 @@ function setupIpc(ctx) {
     if (patch.behavior || patch.source) orch.scheduleQuote(300);
     if (patch.behavior && patch.behavior.dockIcon != null) ctx.setDockIcon(!!next.behavior.dockIcon);
     if (patch.behavior && patch.behavior.launchAtLogin != null) ctx.applyLoginItem();
+    if (patch.behavior && patch.behavior.pauseWhenHidden != null && ctx.applyPausePolicy) ctx.applyPausePolicy();
     ctx.syncTray();
     return next;
   });
@@ -95,6 +94,32 @@ function setupIpc(ctx) {
     const code = p && String(p.code || '').toUpperCase();
     if (!market || !code || !VALID_MARKETS.includes(market)) return { ok: false, error: 'invalid' };
     const s = settings.get();
+    // 持仓视图：加入本地持仓（无成本，右键「持仓成本 / 数量」补）。
+    // 此前云端模式会误写回东财默认组、手动模式会写进 manualList——持仓视图下都看不见。
+    if (s.source.activeGroup === '__positions__') {
+      const list = s.source.positions || [];
+      if (list.some((e) => e.m === market && e.c === code)) return { ok: true, dup: true, pos: true };
+      const entry = { m: market, c: code };
+      if (p.secid) entry.s = String(p.secid);
+      settings.set({ source: { positions: [...list, entry] } });
+      broadcast('evt:settings', settings.get()); // 设置窗持仓列表跟上
+      orch.scheduleQuote(0);
+      return { ok: true, pos: true };
+    }
+    // 云端模式：写回东财（当前分组视图 → 加到该组；合并视图 → 账号默认组）。
+    // 旧行为（写进 manualList）在云端模式下不可见，等价无效，不再保留。
+    if (s.source.mode === 'cloud') {
+      if (!s.source.cloudWrite) {
+        return { ok: false, error: 'cloud-readonly', message: '云端写回已关闭，可在设置 → 数据与自选中开启' };
+      }
+      if (!orch.loggedIn) {
+        return { ok: false, error: 'login', message: '未登录，请先扫码登录东财' };
+      }
+      return orch.cloudWriteAdd({ market, code, secid: p.secid ? String(p.secid) : null })
+        .then((r) => (r && r.re
+          ? { ok: true, dup: !!r.dup }
+          : { ok: false, error: 'cloud', message: (r && r.message) || '同步失败' }));
+    }
     const list = s.source.manualList || [];
     if (list.some((e) => e.m === market && e.c === code)) return { ok: true, dup: true };
     const entry = { m: market, c: code };
@@ -117,11 +142,20 @@ function setupIpc(ctx) {
 
   ipcMain.handle('app:list:reorder', (_e, p) => {
     const keys = Array.isArray(p && p.keys) ? p.keys.map(String) : [];
+    // 旧序（dragstart 捕获）：云端模式下用来推导「谁被拖到了哪」——ss? 写回只发增量，不发的全量
+    const oldKeys = Array.isArray(p && p.oldKeys) ? p.oldKeys.map(String) : [];
     const s = settings.get();
     if (s.source.mode === 'cloud') {
-      const order = {};
-      keys.forEach((k, i) => { order[k] = i; });
-      settings.set({ source: { localOrder: order } });
+      // 具体分组 + 写回开启 → 推到云端（云序为准）；合并视图 / 未登录 / 关闭写回 → 维持本地序
+      const gid = orch.sortKey();
+      const canPush = !!s.source.cloudWrite && orch.loggedIn && gid !== 'all' && orch.groups.length > 0;
+      if (canPush) {
+        orch.cloudWriteSort({ keys, oldKeys }).catch(() => {});
+      } else {
+        const order = {};
+        keys.forEach((k, i) => { order[k] = i; });
+        settings.set({ source: { localOrder: order } });
+      }
     } else {
       const list = s.source.manualList || [];
       const byKey = new Map(list.map((e) => [e.m + e.c, e]));
@@ -130,16 +164,6 @@ function setupIpc(ctx) {
       for (const e of byKey.values()) next.push(e);
       settings.set({ source: { manualList: next } });
     }
-    orch.scheduleQuote(0);
-    return { ok: true };
-  });
-
-  ipcMain.handle('app:list:star', (_e, p) => {
-    const key = String((p && p.key) || '');
-    const on = !!(p && p.on);
-    const stars = { ...(settings.get().source.manualStars || {}) };
-    if (on) stars[key] = true; else delete stars[key];
-    settings.set({ source: { manualStars: stars } });
     orch.scheduleQuote(0);
     return { ok: true };
   });
@@ -153,12 +177,44 @@ function setupIpc(ctx) {
     return { ok: true };
   });
 
-  /* ---------- 个股股价提醒 ---------- */
+  /* ---------- 个股预警（右键 → 预警设置）：到价 + 异动（涨/跌幅专属阈值） ---------- */
 
   ipcMain.handle('app:pricealert:add', (_e, p) => {
     const m = String((p && p.market) || '');
     const c = String((p && p.code) || '').toUpperCase();
     const op = p && p.op === 'lte' ? 'lte' : 'gte';
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    if (p && p.kind === 'pct') {
+      // 异动预警：涨幅超过 / 跌幅超过 X%（存正数，方向由 op 表达）
+      const pct = Number(p && p.pct);
+      if (!VALID_MARKETS.includes(m) || !c || !Number.isFinite(pct) || pct <= 0 || pct > 1000) {
+        return { ok: false, error: 'invalid' };
+      }
+      const rules = (settings.get().alerts && settings.get().alerts.pctRules) || [];
+      if (rules.some((r) => r.m === m && r.c === c && r.op === op && r.pct === pct)) {
+        return { ok: true, dup: true };
+      }
+      // 同方向改值即更新（不叠多条）：表单每方向一个输入，旧值被新值替换
+      settings.set({ alerts: { pctRules: upsertAlertRule(rules, { id, m, c, op, pct, ts: Date.now() }) } });
+      broadcast('evt:settings', settings.get());
+      return { ok: true };
+    }
+    if (p && p.kind === 'sw') {
+      // 急涨急跌（时间窗）：N 分钟内涨/跌幅超过 X%（mins 分钟留空时渲染层已默认 5）
+      const pct = Number(p && p.pct);
+      const mins = Number(p && p.mins);
+      if (!VALID_MARKETS.includes(m) || !c || !Number.isFinite(pct) || pct <= 0 || pct > 100
+        || !Number.isFinite(mins) || mins <= 0 || mins > 240) {
+        return { ok: false, error: 'invalid' };
+      }
+      const swRules = (settings.get().alerts && settings.get().alerts.swRules) || [];
+      if (swRules.some((r) => r.m === m && r.c === c && r.op === op && r.pct === pct && r.mins === mins)) {
+        return { ok: true, dup: true };
+      }
+      settings.set({ alerts: { swRules: upsertAlertRule(swRules, { id, m, c, op, pct, mins, ts: Date.now() }) } });
+      broadcast('evt:settings', settings.get());
+      return { ok: true };
+    }
     const price = Number(p && p.price);
     if (!VALID_MARKETS.includes(m) || !c || !Number.isFinite(price) || price <= 0) {
       return { ok: false, error: 'invalid' };
@@ -167,8 +223,7 @@ function setupIpc(ctx) {
     if (rules.some((r) => r.m === m && r.c === c && r.op === op && r.price === price)) {
       return { ok: true, dup: true };
     }
-    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-    settings.set({ alerts: { priceRules: [...rules, { id, m, c, op, price, ts: Date.now() }] } });
+    settings.set({ alerts: { priceRules: upsertAlertRule(rules, { id, m, c, op, price, ts: Date.now() }) } });
     broadcast('evt:settings', settings.get());
     return { ok: true };
   });
@@ -176,8 +231,10 @@ function setupIpc(ctx) {
   ipcMain.handle('app:pricealert:remove', (_e, p) => {
     const id = p && p.id;
     const cur = settings.get().alerts || {};
-    const rules = (Array.isArray(cur.priceRules) ? cur.priceRules : []).filter((r) => r.id !== id);
-    settings.set({ alerts: { priceRules: rules } });
+    const priceRules = (Array.isArray(cur.priceRules) ? cur.priceRules : []).filter((r) => r.id !== id);
+    const pctRules = (Array.isArray(cur.pctRules) ? cur.pctRules : []).filter((r) => r.id !== id);
+    const swRules = (Array.isArray(cur.swRules) ? cur.swRules : []).filter((r) => r.id !== id);
+    settings.set({ alerts: { priceRules, pctRules, swRules } });
     broadcast('evt:settings', settings.get());
     return { ok: true };
   });
@@ -197,7 +254,7 @@ function setupIpc(ctx) {
     if (ctx.toast) {
       ctx.toast.showAlertToast({
         title: '股价提醒 · 预览',
-        body: '拖动到合适位置，松手即记忆 · 10 秒后自动消失',
+        body: '拖动到合适位置，松手即记忆 · 点击打开小窗',
         accent: '#E5C24F',
       });
     }
@@ -238,13 +295,30 @@ function setupIpc(ctx) {
     return { ok: true, added, invalid };
   });
 
-  ipcMain.handle('app:positions:remove', (_e, p) => {
-    const key = (p && p.market) + String((p && p.code) || '').toUpperCase();
-    const list = (settings.get().source.positions || []).filter((e) => (e.m + e.c) !== key);
-    const patch = { source: { positions: list } };
-    if (!list.length && settings.get().source.activeGroup === '__positions__') patch.source.activeGroup = 'first';
-    settings.set(patch);
+  ipcMain.handle('app:positions:set', (_e, p) => {
+    // 单条 upsert（右键「加入持仓 / 持仓成本」弹窗保存）：成本/数量空 = 不记录
+    const market = p && p.market;
+    const code = p && String(p.code || '').toUpperCase();
+    if (!market || !code || !VALID_MARKETS.includes(market)) return { ok: false, error: 'invalid' };
+    const cost = Number(p && p.cost);
+    const qty = Number(p && p.qty);
+    const entry = {
+      m: market, c: code,
+      cost: Number.isFinite(cost) && cost > 0 ? cost : null,
+      qty: Number.isFinite(qty) && qty > 0 ? Math.round(qty) : null,
+    };
+    if (p && p.secid) entry.s = String(p.secid);
+    const s = settings.get();
+    const existed = (s.source.positions || []).some((e) => e && e.m === market && e.c === code);
+    settings.set({ source: { positions: upsertPosition(s.source.positions, entry) } });
+    broadcast('evt:settings', settings.get()); // 设置窗持仓列表跟上
     orch.scheduleQuote(0);
+    return { ok: true, added: !existed };
+  });
+
+  ipcMain.handle('app:positions:remove', (_e, p) => {
+    if (!(p && p.market && p.code)) return { ok: false, error: 'invalid' };
+    removePosition(p.market, p.code);
     return { ok: true };
   });
 
@@ -341,12 +415,37 @@ function setupIpc(ctx) {
 
   /* ---------- 右键菜单 / 外链 / 其他 ---------- */
 
+  /** 持仓删除（右键菜单与 app:positions:remove 共用）：空了就退出持仓视图 */
+  const removePosition = (market, code) => {
+    const k = market + String(code || '').toUpperCase();
+    const list = (settings.get().source.positions || []).filter((e) => (e.m + e.c) !== k);
+    const patch = { source: { positions: list } };
+    if (!list.length && settings.get().source.activeGroup === '__positions__') patch.source.activeGroup = 'first';
+    settings.set(patch);
+    broadcast('evt:settings', settings.get()); // 设置窗持仓列表跟上
+    orch.scheduleQuote(0);
+  };
+
   ipcMain.handle('app:ctx:menu', (_e, p) => {
     const key = String((p && p.key) || '');
     const st = orch.currentState();
     const row = st && st.rows.find((r) => r.market + r.code === key);
     if (!row) return { ok: false };
     const manual = settings.get().source.mode === 'manual';
+    const src = settings.get().source;
+    const posView = src.activeGroup === '__positions__';
+    const posEntry = (src.positions || []).find((e) => e && e.m === row.market && e.c === row.code);
+    const inPos = !!posEntry;
+    const sendPosEdit = () => {
+      const w = ctx.getMainWin();
+      if (!w || w.isDestroyed()) return;
+      const ex = positionDefaults(src.positions, row.market, row.code);
+      w.webContents.send('evt:posedit', {
+        market: row.market, code: row.code, name: row.name, price: row.price,
+        exists: inPos, cost: ex.cost, qty: ex.qty,
+        secid: posEntry && posEntry.s ? posEntry.s : (row.secid || null),
+      });
+    };
     const tpl = [
       { label: '复制代码（' + row.code + '）', click: () => clipboard.writeText(row.code) },
       {
@@ -357,21 +456,67 @@ function setupIpc(ctx) {
       { type: 'separator' },
       { label: '在东方财富打开', click: () => ctx.openExternalUrl(quoteUrl(row)) },
       {
-        label: '股价提醒…',
+        // 预警设置（参考东财/同花顺右键预警）：到价 + 涨/跌幅异动，四项可同时设
+        label: '预警设置…',
         click: () => {
           const w = ctx.getMainWin();
           if (w && !w.isDestroyed()) w.webContents.send('evt:pricealert', {
             market: row.market, code: row.code, name: row.name, price: row.price,
+            // 回填已设预警（2026-10：此前每次打开都空表单，看不到旧值）
+            existing: alertFormDefaults(settings.get().alerts, row.market, row.code),
           });
         },
       },
     ];
-    if (manual) {
+    // 持仓入口（手动 / 云端模式都有；本地记录，不碰云自选）
+    if (inPos) {
+      tpl.push(
+        { type: 'separator' },
+        { label: '持仓成本 / 数量…', click: sendPosEdit },
+        ...(posView ? [{ label: '从持仓删除', click: () => removePosition(row.market, row.code) }] : []),
+      );
+    } else {
+      tpl.push(
+        { type: 'separator' },
+        { label: '加入持仓（本地记录）…', click: sendPosEdit },
+      );
+    }
+    if (manual && !posView) {
       tpl.push(
         { type: 'separator' },
         { label: row.star ? '取消置顶' : '置顶', click: () => ctx.setStar(key, !row.star) },
         { label: '从自选删除', click: () => ctx.removeStock(row) },
       );
+    } else if (!manual) {
+      // 云端模式：删除写回东财（写失败 → 黄条提示 + 复拉回滚，云数据为准）
+      if (src.cloudWrite && orch.loggedIn) {
+        const gIn = orch.groupsContaining(key);
+        if (gIn.length === 1) {
+          tpl.push(
+            { type: 'separator' },
+            { label: '从自选删除（' + gIn[0].gname + '）', click: () => { orch.cloudWriteDelete({ market: row.market, code: row.code }).catch(() => {}); } },
+          );
+        } else if (gIn.length > 1) {
+          // 一只股在多个分组：列出各分组逐一删，或一次删干净
+          tpl.push(
+            { type: 'separator' },
+            {
+              label: '从自选删除',
+              submenu: [
+                ...gIn.map((g) => ({
+                  label: '从「' + g.gname + '」删除',
+                  click: () => { orch.cloudWriteDelete({ market: row.market, code: row.code, gids: [g.gid] }).catch(() => {}); },
+                })),
+                { type: 'separator' },
+                {
+                  label: '从全部分组删除（' + gIn.length + ' 处）',
+                  click: () => { orch.cloudWriteDelete({ market: row.market, code: row.code }).catch(() => {}); },
+                },
+              ],
+            },
+          );
+        }
+      }
     }
     const menu = Menu.buildFromTemplate(tpl);
     const w = ctx.getMainWin();

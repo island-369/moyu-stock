@@ -26,6 +26,11 @@ async function boot() {
   state = data.state;
   loggedIn = !!(state && state.loggedIn);
 
+  // Esc 收起设置窗（不再失焦即藏后，需要显式的快捷收起通道）
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') widget.invoke('app:settings:hide').catch(() => {});
+  });
+
   fillAll();
   wire();
   renderManualList();
@@ -58,7 +63,6 @@ function fillAll(skipId) {
   $('#vibrancy').checked = !!a.vibrancy;
   $('#pulse').checked = !!a.pulse;
   $('#monoMode').checked = !!a.mono;
-  set('#upColor', a.mono ? 'red' : a.upColor);
   $('#showCode').checked = !!a.showCode;
   $('#showIndexBar').checked = !!a.showIndexBar;
   $('#autoHeight').checked = !!a.autoHeight;
@@ -69,14 +73,20 @@ function fillAll(skipId) {
   $('#dockIcon').checked = !!b.dockIcon;
   $('#contentProtection').checked = !!b.contentProtection;
   $('#launchAtLogin').checked = !!b.launchAtLogin;
+  $('#pauseWhenHidden').checked = !!b.pauseWhenHidden;
   const al = settings.alerts || {};
   $('#alertEnabled').checked = al.enabled !== false;
-  set('#alertStyle', al.style || 'banner');
+  set('#alertStyle', al.style || 'menubar');
   $('#alertLowKey').checked = !!al.lowKey;
   set('#alertThreshold', String(al.threshold || 5));
+  set('#alertBasis', al.basis || 'daily');
+  set('#indexThreshold', String(al.indexThreshold != null ? al.indexThreshold : 1.5));
+  set('#toastMs', String(al.toastMs != null ? al.toastMs : 10000));
+  set('#cooldownMs', String(al.cooldownMs != null ? al.cooldownMs : 900000));
   $('#summaryEnabled').checked = al.summary !== false;
   const sc = settings.source || {};
-  set('#sortMode', sc.sortMode === 'pct' ? 'pct-desc' : (sc.sortMode || 'default'));
+  set('#sortMode', sc.sortMode || 'default'); // 归一化已收口到 Store（D2）
+  $('#cloudWrite').checked = sc.cloudWrite !== false; // 双向同步（默认开）
   updateModeSeg(src.mode);
   renderShortcuts();
   updateCloudState();
@@ -114,7 +124,8 @@ function wire() {
   $('#vibrancy').onchange = () => setPatch({ appearance: { vibrancy: $('#vibrancy').checked } });
   $('#pulse').onchange = () => setPatch({ appearance: { pulse: $('#pulse').checked } });
   $('#monoMode').onchange = () => setPatch({ appearance: { mono: $('#monoMode').checked } });
-  $('#upColor').onchange = () => setPatch({ appearance: { upColor: $('#upColor').value } });
+  // 注：红涨/绿涨（upColor）UI 已随单色模式移除，此处不再绑定（残留绑定会让 wire() 中途抛错，
+  // 其后所有设置项静默失效——预警弹窗时间改了不生效即由此来）
   $('#showCode').onchange = () => setPatch({ appearance: { showCode: $('#showCode').checked } });
   $('#showIndexBar').onchange = () => setPatch({ appearance: { showIndexBar: $('#showIndexBar').checked } });
   $('#autoHeight').onchange = () => setPatch({ appearance: { autoHeight: $('#autoHeight').checked } });
@@ -129,8 +140,14 @@ function wire() {
   $('#alertStyle').onchange = () => setPatch({ alerts: { style: $('#alertStyle').value } });
   $('#alertLowKey').onchange = () => setPatch({ alerts: { lowKey: $('#alertLowKey').checked } });
   $('#alertThreshold').onchange = () => setPatch({ alerts: { threshold: Number($('#alertThreshold').value) } });
+  $('#alertBasis').onchange = () => setPatch({ alerts: { basis: $('#alertBasis').value } });
+  $('#indexThreshold').onchange = () => setPatch({ alerts: { indexThreshold: Number($('#indexThreshold').value) } });
+  $('#toastMs').onchange = () => setPatch({ alerts: { toastMs: Number($('#toastMs').value) } });
+  $('#cooldownMs').onchange = () => setPatch({ alerts: { cooldownMs: Number($('#cooldownMs').value) } });
   $('#summaryEnabled').onchange = () => setPatch({ alerts: { summary: $('#summaryEnabled').checked } });
+  $('#pauseWhenHidden').onchange = () => setPatch({ behavior: { pauseWhenHidden: $('#pauseWhenHidden').checked } });
   $('#sortMode').onchange = () => setPatch({ source: { sortMode: $('#sortMode').value } });
+  $('#cloudWrite').onchange = () => setPatch({ source: { cloudWrite: $('#cloudWrite').checked } });
 
   document.querySelectorAll('#mode button').forEach((btn) => {
     btn.onclick = () => setPatch({ source: { mode: btn.dataset.v } });

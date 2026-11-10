@@ -30,14 +30,22 @@ const DEFAULTS = {
     hideHintShown: false,    // 首次退到后台的提示已展示
     contentProtection: false, // 防录屏：开启后窗口不出现在截屏/录屏/屏幕共享里（会议共享屏不露馅）
     launchAtLogin: false,     // 开机自启（上班开机即有，省掉"手动开应用"这个动作）
+    pauseWhenHidden: false,   // 窗口隐藏超 5 分钟暂停行情/云同步轮询（省电省流量，唤回立即恢复）
   },
   alerts: {
     enabled: true,        // 自选异动提醒（摸鱼核心：不用盯，异动找你）
     threshold: 5,         // 涨跌幅绝对值阈值 %
     summary: true,        // 15:05 收盘战报
-    style: 'banner',      // banner=系统横幅 | menubar=菜单栏 ▲▼ 信号（最低调）| silent=静默只记黄条
+    style: 'menubar',     // banner=系统横幅 | menubar=菜单栏 ▲▼ 信号 | silent=静默只记黄条
+                          // 默认 menubar（最低调），且系统通知授权弹窗推迟到用户主动开横幅才出现
     lowKey: false,        // 低调通知：标题/正文不出现股票名与价格（默认通知本身就是暴露源）
-    priceRules: [],       // 个股股价提醒 [{id,m,c,op:'gte'|'lte',price,hit,ts}]：盘中到价屏上弹窗并重新布防
+    basis: 'daily',       // 异动提醒口径：daily=当日涨跌幅 | pl=持仓盈亏 %（与持仓分组显示列一致）
+    indexThreshold: 1.5,  // 大盘指数异动阈值 %（0=关）；指数用独立 ▲▲/▼▼ 菜单栏信号位
+    priceRules: [],       // 个股到价提醒 [{id,m,c,op:'gte'|'lte',price,hit,ts}]：盘中到价屏上弹窗并重新布防
+    pctRules: [],         // 个股异动预警（右键 → 预警设置）[{id,m,c,op:'gte'|'lte',pct,hit,ts}]：当日涨/跌幅越过专属阈值弹窗；设了的方向不再走全局 threshold
+    swRules: [],           // 急涨急跌（时间窗）[{id,m,c,op:'gte'|'lte',pct,mins,hit,lastAt,ts}]：N 分钟内涨/跌幅超 X% 弹窗；内存滚动采样判定，重启后重新积累样本
+    cooldownMs: 900000,    // 预警冷却：同一规则两次真正提醒的最小间隔 ms（防价位在阈值附近反复震荡时连弹）；0=不冷却
+    toastMs: 10000,        // 预警弹窗显示时长 ms（3000|5000|10000|20000|60000；0=不自动消失，点 × 关）
     toastPos: null,       // 股价提醒弹窗位置（拖动后记忆）{x,y}
   },
   source: {
@@ -48,7 +56,8 @@ const DEFAULTS = {
     activeGroupMigrated: false, // 一次性迁移标记（默认 false，迁移后写 true）
     sortMode: 'default',  // default=自选顺序 | pct=按涨跌幅（摸鱼一眼看异动）
     groupSorts: {},       // 按分组记忆排序：gid -> sortMode，切分组恢复该组上次的排序
-    localOrder: {},       // 云端模式本地顺序覆盖 'SH600519' -> idx
+    localOrder: {},       // 云端模式本地顺序覆盖 'SH600519' -> idx（写回成功后清空，云序为准）
+    cloudWrite: true,     // 云端写回（双向同步）：小窗内加/删/拖拽排序同步到东财账号
     filterStarred: false, // 仅看置顶（手动模式；自选几百只时快速聚焦）
     positions: [],        // 本地持仓 [{m,c,s,cost,qty}] —— 与东财账户无关，成本本地记录
   },
@@ -59,6 +68,7 @@ const DEFAULTS = {
   },
   shortcuts: null,        // 由 DEFAULT_SHORTCUTS 填充
   onboarded: false,
+  schemaVersion: 5,       // 配置迁移版本（src/main/migrations.js 维护；旧安装无此键 → 视为 4）
 };
 
 function isPlainObject(v) {
@@ -73,6 +83,22 @@ function deepMerge(base, patch) {
     else out[k] = patch[k];
   }
   return out;
+}
+
+/** 排序模式归一化（历史值 pct → pct-desc）。写入时归一，读侧就不再需要三处 normSort 副本。 */
+function normalizeSortMode(m) {
+  return m === 'pct' ? 'pct-desc' : (m || 'default');
+}
+
+function normalizeSettings(data) {
+  const src = data && data.source;
+  if (src) {
+    if (src.sortMode != null) src.sortMode = normalizeSortMode(src.sortMode);
+    if (src.groupSorts) {
+      for (const k of Object.keys(src.groupSorts)) src.groupSorts[k] = normalizeSortMode(src.groupSorts[k]);
+    }
+  }
+  return data;
 }
 
 class Store {
@@ -93,7 +119,7 @@ class Store {
     for (const f of [this.file, this.bak]) {
       try {
         const j = JSON.parse(fs.readFileSync(f, 'utf8'));
-        this.data = deepMerge(structuredClone(this.defaults), j);
+        this.data = normalizeSettings(deepMerge(structuredClone(this.defaults), j));
         return this;
       } catch (e) { /* 尝试下一个 */ }
     }
@@ -123,10 +149,24 @@ class Store {
 
   /** 深合并补丁并持久化；返回新数据 */
   set(patch) {
-    this.data = deepMerge(this.data, patch);
+    this.data = normalizeSettings(deepMerge(this.data, patch));
     this.save();
     return this.data;
   }
+
+  /** 高频小改（浓度拖动、弹窗位置记忆等）：合并后防抖落盘；退出前 flush() 兜底 */
+  setSoon(patch, ms = 400) {
+    this.data = normalizeSettings(deepMerge(this.data, patch));
+    this.saveSoon(ms);
+    return this.data;
+  }
+
+  /** 立即落盘（清掉待写的防抖；app before-quit 时调用） */
+  flush() {
+    if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+    this.save();
+    return this;
+  }
 }
 
-module.exports = { Store, DEFAULTS, deepMerge };
+module.exports = { Store, DEFAULTS, deepMerge, normalizeSortMode };
